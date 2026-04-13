@@ -1,8 +1,11 @@
+from fastapi import FastAPI, Query
+from fastapi.responses import JSONResponse
 import requests
 from bs4 import BeautifulSoup
 import re
 import json
-from urllib.parse import urlparse, urlencode
+
+app = FastAPI()
 
 BASE_DOMAIN = "https://narto-drama.com"
 LIST_URL = f"{BASE_DOMAIN}/?lang=id-ID"
@@ -91,61 +94,39 @@ def get_video_src_from_episode(url: str, ep: int):
 
 
 # =========================
-# MAIN HANDLER (Vercel)
+# ROUTES
 # =========================
-def handler(request):
-    path = request.path
 
-    try:
-        # Endpoint: /api/list
-        if path.endswith("/list"):
-            items = scrape_list(LIST_URL)
-            return {
-                "statusCode": 200,
-                "body": json.dumps(items)
-            }
+@app.get("/")
+def home():
+    return {"message": "API Running 🚀"}
 
-        # Endpoint: /api/search?q=keyword
-        elif path.endswith("/search"):
-            query = request.args.get("q", "")
-            search_url = f"{BASE_DOMAIN}/search?lang=id-ID&q={query}"
-            items = scrape_list(search_url)
 
-            return {
-                "statusCode": 200,
-                "body": json.dumps(items)
-            }
+@app.get("/list")
+def list_api():
+    return scrape_list(LIST_URL)
 
-        # Endpoint: /api/episodes?url=...
-        elif path.endswith("/episodes"):
-            url = request.args.get("url")
-            total = get_total_episodes(url)
 
-            return {
-                "statusCode": 200,
-                "body": json.dumps({"total_episode": total})
-            }
+@app.get("/search")
+def search(q: str = Query("")):
+    url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
+    return scrape_list(url)
 
-        # Endpoint: /api/video?url=...&ep=1
-        elif path.endswith("/video"):
-            url = request.args.get("url")
-            ep = int(request.args.get("ep", 1))
 
-            video = get_video_src_from_episode(url, ep)
+@app.get("/episodes")
+def episodes(url: str):
+    total = get_total_episodes(url)
+    return {"total_episode": total}
 
-            return {
-                "statusCode": 200,
-                "body": json.dumps({"video_url": video})
-            }
 
-        else:
-            return {
-                "statusCode": 404,
-                "body": "Not Found"
-            }
+@app.get("/video")
+def video(url: str, ep: int = 1):
+    video = get_video_src_from_episode(url, ep)
+    return {"video_url": video}
 
-    except Exception as e:
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
-        }
+
+# =========================
+# VERCEL HANDLER (WAJIB)
+# =========================
+def handler(request, context):
+    return app
