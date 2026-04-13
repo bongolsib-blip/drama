@@ -27,17 +27,28 @@ def get_video_url(slug: str, ep: int):
         match = re.search(r'initialSourceUrl\s*=\s*"(.*?)"', html)
 
         if not match:
-            return None
+            return {
+                "error": "initialSourceUrl not found",
+                "debug_html_snippet": html[:500]  # potong biar ringan
+            }
 
         raw_url = match.group(1)
+
+        # DEBUG sebelum clean
+        debug_raw = raw_url
 
         # clean encoding
         clean = clean_url(raw_url)
 
-        return clean
+        return {
+            "raw": debug_raw,
+            "clean": clean
+        }
 
     except Exception as e:
-        return None
+        return {
+            "error": str(e)
+        }
 
 
 class handler(BaseHTTPRequestHandler):
@@ -58,23 +69,13 @@ class handler(BaseHTTPRequestHandler):
                     self.wfile.write(b'{"error":"slug required"}')
                     return
 
-                video_url = get_video_url(slug, ep)
-
-                if not video_url:
-                    self.send_response(500)
-                    self.end_headers()
-                    self.wfile.write(b'{"error":"video not found"}')
-                    return
+                result = get_video_url(slug, ep)
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
 
-                self.wfile.write(json.dumps({
-                    "slug": slug,
-                    "episode": ep,
-                    "video_url": video_url
-                }).encode())
+                self.wfile.write(json.dumps(result, indent=2).encode())
 
             else:
                 self.send_response(200)
