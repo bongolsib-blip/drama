@@ -98,7 +98,7 @@ def get_total_episodes(url: str) -> int:
 # =========================
 def get_all_video_links(slug: str):
     try:
-        url = f"{BASE_DOMAIN}/{slug}"
+        url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?from=home?lang=id-ID/"
         resp = requests.get(url, headers=headers, timeout=10)
 
         if resp.status_code != 200:
