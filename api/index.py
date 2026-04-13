@@ -94,7 +94,7 @@ def get_total_episodes(url: str) -> int:
 
 
 # =========================
-# AMBIL SEMUA VIDEO (CORE)
+# CORE: AMBIL SEMUA VIDEO
 # =========================
 def get_all_video_links(slug: str):
     try:
@@ -106,22 +106,33 @@ def get_all_video_links(slug: str):
 
         html = resp.text
 
-        # 🔥 regex fleksibel
         match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', html)
         if not match:
             return []
 
         episodes = json.loads(match.group(1))
 
-        return [
-            {
-                "episode": int(item.get("number", 0)),
-                "video_url": item.get("play_url")
-            }
-            for item in episodes
-        ]
+        result = []
 
-    except:
+        for item in episodes:
+            play_url = item.get("play_url")
+
+            if play_url:
+                # 🔥 FIX UTAMA
+                play_url = play_url.replace("\\/", "/")
+                full_url = BASE_DOMAIN + play_url
+            else:
+                full_url = None
+
+            result.append({
+                "episode": int(item.get("number", 0)),
+                "video_url": full_url
+            })
+
+        return result
+
+    except Exception as e:
+        print("ERROR:", e)
         return []
 
 
