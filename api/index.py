@@ -19,7 +19,10 @@ headers = {
 # UTIL
 # =========================
 def extract_slug(url: str) -> str:
-    return url.rstrip("/").split("/")[-1]
+    parsed = urlparse(url)
+    path = parsed.path.strip("/")
+    parts = path.split("/")
+    return parts[-1] if parts else ""
 
 
 def build_url_from_slug(slug: str):
