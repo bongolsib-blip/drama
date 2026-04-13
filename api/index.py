@@ -3,6 +3,7 @@ from mangum import Mangum
 import requests
 from bs4 import BeautifulSoup
 import re
+import json
 from urllib.parse import urlparse
 
 app = FastAPI()
@@ -93,48 +94,48 @@ def get_total_episodes(url: str) -> int:
 
 
 # =========================
-# GET VIDEO PER EPISODE
+# AMBIL SEMUA VIDEO (CORE)
 # =========================
-def get_video_src_from_episode(slug: str, ep: int):
+def get_all_video_links(slug: str):
     try:
-        url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}?lang=id-ID"
+        url = f"{BASE_DOMAIN}/{slug}"
         resp = requests.get(url, headers=headers, timeout=10)
 
         if resp.status_code != 200:
-            return None
+            return []
 
         html = resp.text
 
-        # ambil iframe / video source
-        match = re.search(r'src="(https://[^"]+)"', html)
+        # 🔥 regex fleksibel
+        match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', html)
+        if not match:
+            return []
 
-        if match:
-            return match.group(1)
+        episodes = json.loads(match.group(1))
 
-        return None
+        return [
+            {
+                "episode": int(item.get("number", 0)),
+                "video_url": item.get("play_url")
+            }
+            for item in episodes
+        ]
 
     except:
-        return None
+        return []
 
 
 # =========================
-# GET ALL VIDEO (LIMIT BIAR GAK TIMEOUT)
+# VIDEO PER EPISODE
 # =========================
-def get_all_video_links(slug: str, max_ep: int):
-    result = []
+def get_video_src_from_episode(slug: str, ep: int):
+    videos = get_all_video_links(slug)
 
-    # ⚠️ batasi biar tidak timeout di Vercel
-    limit = min(max_ep, 20)
+    for item in videos:
+        if item["episode"] == ep:
+            return item["video_url"]
 
-    for ep in range(1, limit + 1):
-        video = get_video_src_from_episode(slug, ep)
-
-        result.append({
-            "episode": ep,
-            "video_url": video
-        })
-
-    return result
+    return None
 
 
 # =========================
@@ -179,12 +180,12 @@ def video(slug: str, ep: int = 1):
     if not slug:
         return {"error": "slug is required"}
 
-    video = get_video_src_from_episode(slug, ep)
+    video_url = get_video_src_from_episode(slug, ep)
 
     return {
         "slug": slug,
         "episode": ep,
-        "video_url": video
+        "video_url": video_url
     }
 
 
@@ -193,14 +194,10 @@ def all_videos(slug: str):
     if not slug:
         return {"error": "slug is required"}
 
-    url = build_url_from_slug(slug)
-    total = get_total_episodes(url)
-
-    data = get_all_video_links(slug, total)
+    videos = get_all_video_links(slug)
 
     return {
         "slug": slug,
-        "total_episode": total,
-        "fetched": len(data),
-        "data": data
+        "total": len(videos),
+        "data": videos
     }
