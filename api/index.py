@@ -1,88 +1,230 @@
-from http.server import BaseHTTPRequestHandler
+from fastapi import FastAPI, Query
+from fastapi.responses import StreamingResponse
+from mangum import Mangum
 import requests
+from bs4 import BeautifulSoup
 import re
 import json
+from urllib.parse import urlparse
 
-BASE = "https://narto-drama.com"
+app = FastAPI()
+handler = Mangum(app)
 
-headers = {
+BASE_DOMAIN = "https://narto-drama.com"
+LIST_URL = f"{BASE_DOMAIN}/?lang=id-ID"
+
+HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
+STREAM_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": BASE_DOMAIN,
+    "Origin": BASE_DOMAIN
+}
 
-def clean_url(url: str) -> str:
-    return url.replace("\\/", "/").replace("\\u0026", "&")
-
-
-def get_video_url(slug: str, ep: int):
+# =========================
+# UTIL
+# =========================
+def extract_slug(url: str) -> str:
     try:
-        watch_url = f"{BASE}/detail/watch/{slug}/{ep}?lang=id-ID"
+        parsed = urlparse(url)
+        path = parsed.path.strip("/")
+        return path.split("/")[-1] if path else ""
+    except:
+        return ""
 
-        resp = requests.get(watch_url, headers=headers, timeout=10)
-        html = resp.text
 
-        # =========================
-        # 🔥 ambil initialSourceUrl
-        # =========================
-        match = re.search(r'initialSourceUrl\s*=\s*"(.*?)"', html)
+# =========================
+# SCRAPE LIST
+# =========================
+def scrape_list(url):
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp.raise_for_status()
 
-        if not match:
-            return {
-                "error": "initialSourceUrl not found",
-                "debug_html_snippet": html[:500]  # potong biar ringan
-            }
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-        raw_url = match.group(1)
+        items = []
+        for card in soup.find_all("a", class_="card-link-overlay"):
+            title = card.get_text(strip=True)
+            href = card.get("href")
 
-        # DEBUG sebelum clean
-        debug_raw = raw_url
+            if href and not href.startswith("http"):
+                href = BASE_DOMAIN + href
 
-        # clean encoding
-        clean = clean_url(raw_url)
+            if title and href:
+                items.append({
+                    "title": title,
+                    "href": href.split("?")[0],
+                    "slug": extract_slug(href)
+                })
 
-        return {
-            "raw": debug_raw,
-            "clean": clean
-        }
+        return items
 
     except Exception as e:
-        return {
-            "error": str(e)
-        }
+        return {"error": str(e)}
 
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        try:
-            path = self.path
+# =========================
+# TOTAL EPISODE
+# =========================
+def get_total_episodes(slug: str) -> int:
+    try:
+        url = f"{BASE_DOMAIN}/{slug}"
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp.raise_for_status()
 
-            if path.startswith("/api/video"):
-                query = path.split("?")[-1]
-                params = dict(q.split("=") for q in query.split("&") if "=" in q)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        episode_links = soup.find_all("a", class_="episode-item")
 
-                slug = params.get("slug")
-                ep = int(params.get("ep", 1))
+        max_ep = 0
 
-                if not slug:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b'{"error":"slug required"}')
-                    return
+        for link in episode_links:
+            title = link.get("title")
+            if title and title.isdigit():
+                max_ep = max(max_ep, int(title))
+                continue
 
-                result = get_video_url(slug, ep)
+            text = link.get_text(strip=True)
+            match = re.search(r"EP\s*(\d+)", text, re.IGNORECASE)
+            if match:
+                max_ep = max(max_ep, int(match.group(1)))
 
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
+        return max_ep
 
-                self.wfile.write(json.dumps(result, indent=2).encode())
+    except:
+        return 0
 
+
+# =========================
+# CORE: AMBIL VIDEO
+# =========================
+def get_all_video_links(slug: str):
+    try:
+        url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?from=home?lang=id-ID/"
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+
+        if resp.status_code != 200:
+            return []
+
+        html = resp.text
+
+        match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', html)
+        if not match:
+            return []
+
+        episodes = json.loads(match.group(1))
+
+        result = []
+
+        for item in episodes:
+            play_url = item.get("play_url")
+
+            if play_url:
+                play_url = play_url.replace("\\/", "/")
+                full_url = play_url
             else:
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"API OK")
+                full_url = None
 
-        except Exception as e:
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(str(e).encode())
+            result.append({
+                "episode": int(item.get("number", 0)),
+                "video_url": full_url
+            })
+
+        return result
+
+    except Exception as e:
+        print("ERROR:", e)
+        return []
+
+
+def get_video_src_from_episode(slug: str, ep: int):
+    videos = get_all_video_links(slug)
+
+    for item in videos:
+        if item["episode"] == ep:
+            return item["video_url"]
+
+    return None
+
+
+# =========================
+# ROUTES
+# =========================
+
+@app.get("/")
+def home():
+    return {"message": "API Running 🚀"}
+
+
+@app.get("/list")
+def list_api():
+    return scrape_list(LIST_URL)
+
+
+@app.get("/search")
+def search(q: str = Query("")):
+    try:
+        url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
+        return scrape_list(url)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/episodes")
+def episodes(slug: str):
+    if not slug:
+        return {"error": "slug is required"}
+
+    total = get_total_episodes(slug)
+
+    return {
+        "slug": slug,
+        "total_episode": total
+    }
+
+
+@app.get("/video")
+def video(slug: str, ep: int = 1):
+    if not slug:
+        return {"error": "slug is required"}
+
+    video_url = get_video_src_from_episode(slug, ep)
+
+    return {
+        "slug": slug,
+        "episode": ep,
+        "video_url": video_url
+    }
+
+
+@app.get("/videos")
+def all_videos(slug: str):
+    if not slug:
+        return {"error": "slug is required"}
+
+    videos = get_all_video_links(slug)
+
+    return {
+        "slug": slug,
+        "total": len(videos),
+        "data": videos
+    }
+
+
+# =========================
+# 🔥 STREAM PROXY (ANTI 403)
+# =========================
+@app.get("/stream")
+def stream(url: str):
+    try:
+        r = requests.get(url, headers=STREAM_HEADERS, stream=True)
+
+        return StreamingResponse(
+            r.iter_content(chunk_size=1024),
+            media_type=r.headers.get("Content-Type")
+        )
+
+    except Exception as e:
+        return {"error": str(e)}
