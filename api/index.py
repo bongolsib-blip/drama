@@ -6,12 +6,12 @@ from bs4 import BeautifulSoup
 import re
 import json
 from urllib.parse import urlparse
+import time
 
 app = FastAPI()
 handler = Mangum(app)
 
 BASE_DOMAIN = "https://narto-drama.com"
-LIST_URL = f"{BASE_DOMAIN}/?lang=id-ID"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
@@ -60,7 +60,14 @@ def scrape_list(url):
                     "slug": extract_slug(href)
                 })
 
-        return items
+        # cek next page
+        next_btn = soup.find("a", rel="next")
+        has_next = True if next_btn else False
+
+        return {
+            "items": items,
+            "has_next": has_next
+        }
 
     except Exception as e:
         return {"error": str(e)}
@@ -98,11 +105,11 @@ def get_total_episodes(slug: str) -> int:
 
 
 # =========================
-# CORE: AMBIL VIDEO
+# VIDEO SCRAPER
 # =========================
 def get_all_video_links(slug: str):
     try:
-        url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?from=home?lang=id-ID/"
+        url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?lang=id-ID"
         resp = requests.get(url, headers=HEADERS, timeout=10)
 
         if resp.status_code != 200:
@@ -123,13 +130,12 @@ def get_all_video_links(slug: str):
 
             if play_url:
                 play_url = play_url.replace("\\/", "/")
-                full_url = play_url
             else:
-                full_url = None
+                play_url = None
 
             result.append({
                 "episode": int(item.get("number", 0)),
-                "video_url": full_url
+                "video_url": play_url
             })
 
         return result
@@ -158,38 +164,63 @@ def home():
     return {"message": "API Running 🚀"}
 
 
+# 🔥 LIST PER PAGE
 @app.get("/list")
-def list_api():
-    return scrape_list(LIST_URL)
+def list_api(page: int = 1):
+    url = f"{BASE_DOMAIN}/?lang=id-ID&page={page}"
+    return {
+        "page": page,
+        "data": scrape_list(url)
+    }
 
 
+# 🔥 AUTO SCRAPE MULTI PAGE
+@app.get("/list-all")
+def list_all(max_page: int = 5, delay: float = 1):
+    all_items = []
+
+    for page in range(1, max_page + 1):
+        print(f"[SCRAPE] Page {page}")
+
+        url = f"{BASE_DOMAIN}/?lang=id-ID&page={page}"
+        data = scrape_list(url)
+
+        if isinstance(data, dict) and "items" in data:
+            all_items.extend(data["items"])
+
+        # stop kalau sudah tidak ada next
+        if not data.get("has_next"):
+            break
+
+        time.sleep(delay)
+
+    return {
+        "total": len(all_items),
+        "pages_scraped": page,
+        "data": all_items
+    }
+
+
+# 🔍 SEARCH
 @app.get("/search")
 def search(q: str = Query("")):
-    try:
-        url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
-        return scrape_list(url)
-    except Exception as e:
-        return {"error": str(e)}
+    url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
+    return scrape_list(url)
 
 
+# 📺 EPISODES
 @app.get("/episodes")
 def episodes(slug: str):
-    if not slug:
-        return {"error": "slug is required"}
-
     total = get_total_episodes(slug)
-
     return {
         "slug": slug,
         "total_episode": total
     }
 
 
+# 🎬 SINGLE VIDEO
 @app.get("/video")
 def video(slug: str, ep: int = 1):
-    if not slug:
-        return {"error": "slug is required"}
-
     video_url = get_video_src_from_episode(slug, ep)
 
     return {
@@ -199,11 +230,9 @@ def video(slug: str, ep: int = 1):
     }
 
 
+# 🎬 ALL VIDEOS
 @app.get("/videos")
 def all_videos(slug: str):
-    if not slug:
-        return {"error": "slug is required"}
-
     videos = get_all_video_links(slug)
 
     return {
@@ -213,9 +242,7 @@ def all_videos(slug: str):
     }
 
 
-# =========================
-# 🔥 STREAM PROXY (ANTI 403)
-# =========================
+# 🔥 STREAM PROXY
 @app.get("/stream")
 def stream(url: str):
     try:
