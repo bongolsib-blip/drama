@@ -103,6 +103,7 @@ def scrape_list(url):
 # =========================
 # DETAIL ENDPOINT 🔥
 # =========================
+
 def scrape_detail(slug: str):
     try:
         url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
@@ -111,39 +112,59 @@ def scrape_detail(slug: str):
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # TITLE
-        title = soup.find("h1")
-        title = title.get_text(strip=True) if title else ""
+        # =========================
+        # TITLE (FIXED)
+        # =========================
+        title_tag = soup.find("h1", class_="movie-title")
+        title = title_tag.get_text(strip=True) if title_tag else ""
 
-        # THUMBNAIL
-        img = soup.find("img")
-        thumbnail = img.get("src") if img else None
+        # =========================
+        # EPISODE INFO (FIXED)
+        # =========================
+        sub_tag = soup.find("p", class_="movie-sub")
+        episode_text = sub_tag.get_text(" ", strip=True) if sub_tag else ""
+
+        # extract angka episode
+        total_episode = 0
+        match = re.search(r"(\d+)\s*Episode", episode_text)
+        if match:
+            total_episode = int(match.group(1))
+
+        # =========================
+        # DESCRIPTION (FIXED)
+        # =========================
+        desc_tag = soup.find("div", class_="movie-desc")
+        description = desc_tag.get_text(strip=True) if desc_tag else ""
+
+        # =========================
+        # TAGS (FIXED)
+        # =========================
+        tags = []
+        for tag in soup.find_all("a", class_="movie-tag-pill"):
+            tags.append(tag.get_text(strip=True))
+
+        # =========================
+        # THUMBNAIL (fallback aman)
+        # =========================
+        img_tag = soup.find("img", class_="poster")
+        if not img_tag:
+            img_tag = soup.find("img")
+
+        thumbnail = img_tag.get("src") if img_tag else None
         if thumbnail and thumbnail.startswith("/"):
             thumbnail = BASE_DOMAIN + thumbnail
-
-        # SINOPSIS
-        desc = soup.find("p")
-        description = desc.get_text(strip=True) if desc else ""
-
-        # TAGS
-        tags = [t.get_text(strip=True) for t in soup.find_all("a", class_="movie-tag")]
-
-        # TOTAL EPISODE
-        episodes = soup.find_all("a", class_="episode-item")
-        total_episode = len(episodes)
 
         return {
             "title": title,
             "thumbnail": thumbnail,
             "description": description,
             "tags": tags,
-            "total_episode": total_episode
+            "total_episode": total_episode,
+            "episode_raw": episode_text
         }
 
     except Exception as e:
         return {"error": str(e)}
-
-
 # =========================
 # EPISODES
 # =========================
