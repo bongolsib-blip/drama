@@ -14,7 +14,9 @@ handler = Mangum(app)
 BASE_DOMAIN = "https://narto-drama.com"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": BASE_DOMAIN
 }
 
 STREAM_HEADERS = {
@@ -35,8 +37,12 @@ def extract_slug(url: str) -> str:
         return ""
 
 
+def clean_url(url: str):
+    return url.replace("\\/", "/").replace("\\u0026", "&")
+
+
 # =========================
-# SCRAPE LIST (FIX TITLE H3)
+# SCRAPE LIST
 # =========================
 def scrape_list(url):
     try:
@@ -47,34 +53,47 @@ def scrape_list(url):
 
         items = []
 
-        # 🔥 LOOP DARI ARTICLE
         for card in soup.find_all("article", class_="card"):
 
-            # ✅ ambil title dari h3
+            # TITLE
             title_tag = card.find("h3", class_="title")
             title = title_tag.get_text(strip=True) if title_tag else ""
 
-            # ✅ ambil href dari a
+            # LINK
             link_tag = card.find("a", class_="card-link-overlay")
             href = link_tag.get("href") if link_tag else None
 
             if href and not href.startswith("http"):
                 href = BASE_DOMAIN + href
 
+            # THUMBNAIL
+            img_tag = card.find("img", class_="poster")
+            thumbnail = img_tag.get("src") if img_tag else None
+            if thumbnail and thumbnail.startswith("/"):
+                thumbnail = BASE_DOMAIN + thumbnail
+
+            # TAGS
+            tags = [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
+
+            # EPISODE BADGE
+            ep_tag = card.find("div", class_="episode-badge")
+            episode_badge = ep_tag.get_text(strip=True) if ep_tag else None
+
             if title and href:
                 items.append({
                     "title": title,
                     "href": href.split("?")[0],
-                    "slug": extract_slug(href)
+                    "slug": extract_slug(href),
+                    "thumbnail": thumbnail,
+                    "tags": tags,
+                    "episode_badge": episode_badge
                 })
 
-        # pagination
         next_btn = soup.find("a", rel="next")
-        has_next = True if next_btn else False
 
         return {
             "items": items,
-            "has_next": has_next
+            "has_next": True if next_btn else False
         }
 
     except Exception as e:
@@ -82,84 +101,99 @@ def scrape_list(url):
 
 
 # =========================
-# TOTAL EPISODE
+# DETAIL ENDPOINT 🔥
 # =========================
-def get_total_episodes(slug: str) -> int:
+def scrape_detail(slug: str):
     try:
         url = f"{BASE_DOMAIN}/{slug}"
         resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        episode_links = soup.find_all("a", class_="episode-item")
 
-        max_ep = 0
+        # TITLE
+        title = soup.find("h1")
+        title = title.get_text(strip=True) if title else ""
 
-        for link in episode_links:
-            title = link.get("title")
-            if title and title.isdigit():
-                max_ep = max(max_ep, int(title))
-                continue
+        # THUMBNAIL
+        img = soup.find("img")
+        thumbnail = img.get("src") if img else None
+        if thumbnail and thumbnail.startswith("/"):
+            thumbnail = BASE_DOMAIN + thumbnail
 
-            text = link.get_text(strip=True)
-            match = re.search(r"EP\s*(\d+)", text, re.IGNORECASE)
-            if match:
-                max_ep = max(max_ep, int(match.group(1)))
+        # SINOPSIS
+        desc = soup.find("p")
+        description = desc.get_text(strip=True) if desc else ""
 
-        return max_ep
+        # TAGS
+        tags = [t.get_text(strip=True) for t in soup.find_all("a", class_="movie-tag")]
 
-    except:
-        return 0
+        # TOTAL EPISODE
+        episodes = soup.find_all("a", class_="episode-item")
+        total_episode = len(episodes)
 
-
-# =========================
-# VIDEO SCRAPER
-# =========================
-def get_all_video_links(slug: str):
-    try:
-        url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?lang=id-ID"
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-
-        if resp.status_code != 200:
-            return []
-
-        html = resp.text
-
-        match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', html)
-        if not match:
-            return []
-
-        episodes = json.loads(match.group(1))
-
-        result = []
-
-        for item in episodes:
-            play_url = item.get("play_url")
-
-            if play_url:
-                play_url = play_url.replace("\\/", "/")
-            else:
-                play_url = None
-
-            result.append({
-                "episode": int(item.get("number", 0)),
-                "video_url": play_url
-            })
-
-        return result
+        return {
+            "title": title,
+            "thumbnail": thumbnail,
+            "description": description,
+            "tags": tags,
+            "total_episode": total_episode
+        }
 
     except Exception as e:
-        print("ERROR:", e)
+        return {"error": str(e)}
+
+
+# =========================
+# EPISODES
+# =========================
+def get_total_episodes(slug: str):
+    url = f"{BASE_DOMAIN}/{slug}"
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    episodes = soup.find_all("a", class_="episode-item")
+    return len(episodes)
+
+
+# =========================
+# VIDEO
+# =========================
+def get_all_video_links(slug: str):
+    url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?lang=id-ID"
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+
+    if resp.status_code != 200:
         return []
 
+    html = resp.text
 
-def get_video_src_from_episode(slug: str, ep: int):
+    match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', html)
+    if not match:
+        return []
+
+    episodes = json.loads(match.group(1))
+
+    result = []
+
+    for item in episodes:
+        play_url = item.get("play_url")
+        if play_url:
+            play_url = play_url.replace("\\/", "/")
+
+        result.append({
+            "episode": int(item.get("number", 0)),
+            "video_url": play_url
+        })
+
+    return result
+
+
+def get_video_src(slug: str, ep: int):
     videos = get_all_video_links(slug)
-
-    for item in videos:
-        if item["episode"] == ep:
-            return item["video_url"]
-
+    for v in videos:
+        if v["episode"] == ep:
+            return v["video_url"]
     return None
 
 
@@ -169,10 +203,9 @@ def get_video_src_from_episode(slug: str, ep: int):
 
 @app.get("/")
 def home():
-    return {"message": "API Running 🚀"}
+    return {"status": "API Running 🚀"}
 
 
-# 🔥 LIST PER PAGE
 @app.get("/list")
 def list_api(page: int = 1):
     url = f"{BASE_DOMAIN}/?lang=id-ID&page={page}"
@@ -182,18 +215,15 @@ def list_api(page: int = 1):
     }
 
 
-# 🔥 AUTO SCRAPE MULTI PAGE
 @app.get("/list-all")
 def list_all(max_page: int = 5, delay: float = 1):
     all_items = []
 
     for page in range(1, max_page + 1):
-        print(f"[SCRAPE] Page {page}")
-
         url = f"{BASE_DOMAIN}/?lang=id-ID&page={page}"
         data = scrape_list(url)
 
-        if isinstance(data, dict) and "items" in data:
+        if "items" in data:
             all_items.extend(data["items"])
 
         if not data.get("has_next"):
@@ -203,62 +233,54 @@ def list_all(max_page: int = 5, delay: float = 1):
 
     return {
         "total": len(all_items),
-        "pages_scraped": page,
         "data": all_items
     }
 
 
-# 🔍 SEARCH
 @app.get("/search")
-def search(q: str = Query("")):
+def search(q: str):
     url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
     return scrape_list(url)
 
 
-# 📺 EPISODES
-@app.get("/episodes")
-def episodes(slug: str):
-    total = get_total_episodes(slug)
+@app.get("/detail")
+def detail(slug: str):
     return {
         "slug": slug,
-        "total_episode": total
+        "data": scrape_detail(slug)
     }
 
 
-# 🎬 SINGLE VIDEO
+@app.get("/episodes")
+def episodes(slug: str):
+    return {
+        "slug": slug,
+        "total_episode": get_total_episodes(slug)
+    }
+
+
+@app.get("/videos")
+def videos(slug: str):
+    return {
+        "slug": slug,
+        "data": get_all_video_links(slug)
+    }
+
+
 @app.get("/video")
 def video(slug: str, ep: int = 1):
-    video_url = get_video_src_from_episode(slug, ep)
-
     return {
         "slug": slug,
         "episode": ep,
-        "video_url": video_url
+        "video_url": get_video_src(slug, ep)
     }
 
 
-# 🎬 ALL VIDEOS
-@app.get("/videos")
-def all_videos(slug: str):
-    videos = get_all_video_links(slug)
-
-    return {
-        "slug": slug,
-        "total": len(videos),
-        "data": videos
-    }
-
-
-# 🔥 STREAM PROXY
 @app.get("/stream")
 def stream(url: str):
-    try:
-        r = requests.get(url, headers=STREAM_HEADERS, stream=True)
+    r = requests.get(url, headers=STREAM_HEADERS, stream=True)
 
-        return StreamingResponse(
-            r.iter_content(chunk_size=1024),
-            media_type=r.headers.get("Content-Type")
-        )
-
-    except Exception as e:
-        return {"error": str(e)}
+    return StreamingResponse(
+        r.iter_content(chunk_size=1024),
+        media_type=r.headers.get("Content-Type")
+    )
