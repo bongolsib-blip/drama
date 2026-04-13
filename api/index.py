@@ -105,7 +105,7 @@ def scrape_list(url):
 # =========================
 def scrape_detail(slug: str):
     try:
-        url = f"{BASE_DOMAIN}/{slug}"
+        url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
         resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
 
