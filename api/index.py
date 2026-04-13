@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import json
+from urllib.parse import urlparse
 
 app = FastAPI()
 handler = Mangum(app)
@@ -19,10 +20,19 @@ headers = {
 # UTIL
 # =========================
 def extract_slug(url: str) -> str:
-    parsed = urlparse(url)
-    path = parsed.path.strip("/")
-    parts = path.split("/")
-    return parts[-1] if parts else ""
+    try:
+        if not url:
+            return ""
+
+        parsed = urlparse(url)
+        path = parsed.path.strip("/")
+
+        if not path:
+            return ""
+
+        return path.split("/")[-1]
+    except:
+        return ""
 
 
 def build_url_from_slug(slug: str):
@@ -33,71 +43,81 @@ def build_url_from_slug(slug: str):
 # SCRAPE LIST
 # =========================
 def scrape_list(url):
-    resp = requests.get(url, headers=headers)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-    items = []
-    for card in soup.find_all("a", class_="card-link-overlay"):
-        title = card.get_text(strip=True)
-        href = card.get("href")
+        items = []
+        for card in soup.find_all("a", class_="card-link-overlay"):
+            title = card.get_text(strip=True)
+            href = card.get("href")
 
-        if href and not href.startswith("http"):
-            href = BASE_DOMAIN + href
+            if href and not href.startswith("http"):
+                href = BASE_DOMAIN + href
 
-        if title and href:
-            items.append({
-                "title": title,
-                "href": href,
-                "slug": extract_slug(href)  # 🔥 langsung kasih slug
-            })
+            if title and href:
+                items.append({
+                    "title": title,
+                    "href": href.split("?")[0],  # 🔥 bersihkan query
+                    "slug": extract_slug(href)
+                })
 
-    return items
+        return items
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # =========================
 # TOTAL EPISODE
 # =========================
 def get_total_episodes(url: str) -> int:
-    resp = requests.get(url, headers=headers)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    episode_links = soup.find_all("a", class_="episode-item")
+        soup = BeautifulSoup(resp.text, "html.parser")
+        episode_links = soup.find_all("a", class_="episode-item")
 
-    max_ep = 0
+        max_ep = 0
 
-    for link in episode_links:
-        title = link.get("title")
-        if title and title.isdigit():
-            max_ep = max(max_ep, int(title))
-            continue
+        for link in episode_links:
+            title = link.get("title")
+            if title and title.isdigit():
+                max_ep = max(max_ep, int(title))
+                continue
 
-        text = link.get_text(strip=True)
-        match = re.search(r"EP\s*(\d+)", text, re.IGNORECASE)
-        if match:
-            max_ep = max(max_ep, int(match.group(1)))
+            text = link.get_text(strip=True)
+            match = re.search(r"EP\s*(\d+)", text, re.IGNORECASE)
+            if match:
+                max_ep = max(max_ep, int(match.group(1)))
 
-    return max_ep
+        return max_ep
+
+    except:
+        return 0
 
 
 # =========================
 # AMBIL SEMUA DATA EPISODE
 # =========================
 def get_all_episode_data(url: str):
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        return []
-
-    html = resp.text
-
-    match = re.search(r'episodeItemsRaw\s*=\s*(\[\{.*?\}\]);', html, re.DOTALL)
-    if not match:
-        return []
-
     try:
+        resp = requests.get(url, headers=headers, timeout=10)
+
+        if resp.status_code != 200:
+            return []
+
+        html = resp.text
+
+        match = re.search(r'episodeItemsRaw\s*=\s*(\[\{.*?\}\]);', html, re.DOTALL)
+        if not match:
+            return []
+
         return json.loads(match.group(1))
+
     except:
         return []
 
@@ -147,21 +167,35 @@ def list_api():
 
 @app.get("/search")
 def search(q: str = Query("")):
-    url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
-    return scrape_list(url)
+    try:
+        url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
+        return scrape_list(url)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/episodes")
 def episodes(slug: str):
+    if not slug:
+        return {"error": "slug is required"}
+
     url = build_url_from_slug(slug)
     total = get_total_episodes(url)
-    return {"slug": slug, "total_episode": total}
+
+    return {
+        "slug": slug,
+        "total_episode": total
+    }
 
 
 @app.get("/video")
 def video(slug: str, ep: int = 1):
+    if not slug:
+        return {"error": "slug is required"}
+
     url = build_url_from_slug(slug)
     video = get_video_src_from_episode(url, ep)
+
     return {
         "slug": slug,
         "episode": ep,
@@ -171,8 +205,12 @@ def video(slug: str, ep: int = 1):
 
 @app.get("/videos")
 def all_videos(slug: str):
+    if not slug:
+        return {"error": "slug is required"}
+
     url = build_url_from_slug(slug)
     videos = get_all_video_links(url)
+
     return {
         "slug": slug,
         "total": len(videos),
