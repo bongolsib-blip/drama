@@ -104,24 +104,42 @@ def extract_m3u8_from_play_url(play_url: str):
     try:
         full_url = BASE_DOMAIN + play_url.replace("\\/", "/")
 
-        resp = requests.get(
+        session = requests.Session()
+
+        # 🔥 Step 1: buka homepage dulu (ambil cookie)
+        session.get(BASE_DOMAIN, headers=HEADERS)
+
+        # 🔥 Step 2: request play_url (FOLLOW REDIRECT)
+        resp = session.get(
             full_url,
-            headers=STREAM_HEADERS,
-            allow_redirects=False,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": BASE_DOMAIN,
+                "Origin": BASE_DOMAIN,
+                "Accept": "*/*"
+            },
+            allow_redirects=True,
             timeout=10
         )
 
-        # CASE 1: redirect
-        if "Location" in resp.headers:
-            redirect_url = resp.headers["Location"]
-            if ".m3u8" in redirect_url:
-                return redirect_url
+        # =========================
+        # 🔥 CASE 1: final URL sudah m3u8
+        # =========================
+        if ".m3u8" in resp.url:
+            return resp.url
 
-        # CASE 2: response text
-        if ".m3u8" in resp.text:
-            for line in resp.text.splitlines():
-                if ".m3u8" in line:
-                    return line
+        # =========================
+        # 🔥 CASE 2: isi response adalah m3u8
+        # =========================
+        if "#EXTM3U" in resp.text:
+            return resp.url
+
+        # =========================
+        # 🔥 CASE 3: cari di response
+        # =========================
+        match = re.search(r'(https?://[^\s"\']+\.m3u8)', resp.text)
+        if match:
+            return match.group(1)
 
         return None
 
