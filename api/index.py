@@ -1,214 +1,87 @@
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import StreamingResponse
-from mangum import Mangum
+from http.server import BaseHTTPRequestHandler
 import requests
-from bs4 import BeautifulSoup
 import re
 import json
-from urllib.parse import urlparse
 
-app = FastAPI()
-handler = Mangum(app)
+BASE = "https://narto-drama.com"
 
-BASE_DOMAIN = "https://narto-drama.com"
-LIST_URL = f"{BASE_DOMAIN}/?lang=id-ID"
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0 Safari/537.36"
-    )
+headers = {
+    "User-Agent": "Mozilla/5.0"
 }
 
-# =========================
-# UTIL
-# =========================
-def extract_slug(url: str) -> str:
+
+def clean_url(url: str) -> str:
+    return url.replace("\\/", "/").replace("\\u0026", "&")
+
+
+def get_video_url(slug: str, ep: int):
     try:
-        parsed = urlparse(url)
-        path = parsed.path.strip("/")
-        return path.split("/")[-1] if path else ""
-    except:
-        return ""
+        watch_url = f"{BASE}/detail/watch/{slug}/{ep}?lang=id-ID"
 
+        resp = requests.get(watch_url, headers=headers, timeout=10)
+        html = resp.text
 
-# =========================
-# SCRAPE LIST
-# =========================
-def scrape_list(url):
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
+        # =========================
+        # 🔥 ambil initialSourceUrl
+        # =========================
+        match = re.search(r'initialSourceUrl\s*=\s*"(.*?)"', html)
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        if not match:
+            return None
 
-        items = []
-        for card in soup.find_all("a", class_="card-link-overlay"):
-            title = card.get_text(strip=True)
-            href = card.get("href")
+        raw_url = match.group(1)
 
-            if href and not href.startswith("http"):
-                href = BASE_DOMAIN + href
+        # clean encoding
+        clean = clean_url(raw_url)
 
-            if title and href:
-                items.append({
-                    "title": title,
-                    "href": href.split("?")[0],
-                    "slug": extract_slug(href)
-                })
-
-        return items
+        return clean
 
     except Exception as e:
-        return {"error": str(e)}
-
-
-# =========================
-# TOTAL EPISODE
-# =========================
-def get_total_episodes(slug: str) -> int:
-    try:
-        url = f"{BASE_DOMAIN}/{slug}"
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        episode_links = soup.find_all("a", class_="episode-item")
-
-        max_ep = 0
-
-        for link in episode_links:
-            title = link.get("title")
-            if title and title.isdigit():
-                max_ep = max(max_ep, int(title))
-                continue
-
-            text = link.get_text(strip=True)
-            match = re.search(r"EP\s*(\d+)", text, re.IGNORECASE)
-            if match:
-                max_ep = max(max_ep, int(match.group(1)))
-
-        return max_ep
-
-    except:
-        return 0
-
-
-# =========================
-# GET VIDEO URL
-# =========================
-def get_video_src_from_episode(url: str, ep: int):
-    resp = requests.get(url, headers=HEADERS)
-    if resp.status_code != 200:
         return None
 
-    html = resp.text
 
-    match = re.search(r'episodeItemsRaw\s*=\s*(\[\{.*?\}\]);', html, re.DOTALL)
-    if not match:
-        return None
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        try:
+            path = self.path
 
-    try:
-        episodes = json.loads(match.group(1))
-    except:
-        return None
+            if path.startswith("/api/video"):
+                query = path.split("?")[-1]
+                params = dict(q.split("=") for q in query.split("&") if "=" in q)
 
-    for item in episodes:
-        if int(item.get("number", 0)) == ep:
-            return item.get("play_url")
+                slug = params.get("slug")
+                ep = int(params.get("ep", 1))
 
-    return None
+                if not slug:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"slug required"}')
+                    return
 
+                video_url = get_video_url(slug, ep)
 
-# =========================
-# 🔥 STREAM VIDEO (FINAL FIX)
-# =========================
-@app.get("/stream")
-def stream(request: Request, slug: str, ep: int):
-    try:
-        watch_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}?lang=id-ID"
+                if not video_url:
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"video not found"}')
+                    return
 
-        play_url = get_video_src_from_episode(watch_url, ep)
-        if not play_url:
-            return {"error": "video not found"}
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
 
-        video_url = BASE_DOMAIN + play_url.replace("\\/", "/")
+                self.wfile.write(json.dumps({
+                    "slug": slug,
+                    "episode": ep,
+                    "video_url": video_url
+                }).encode())
 
-        # =========================
-        # HEADERS KE SERVER VIDEO
-        # =========================
-        headers = {
-            "User-Agent": HEADERS["User-Agent"],
-            "Referer": BASE_DOMAIN,
-            "Origin": BASE_DOMAIN,
-        }
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"API OK")
 
-        # ambil range dari browser
-        range_header = request.headers.get("range")
-        if range_header:
-            headers["Range"] = range_header
-        else:
-            headers["Range"] = "bytes=0-"
-
-        # request video
-        r = requests.get(video_url, headers=headers, stream=True)
-
-        # =========================
-        # RESPONSE KE CLIENT
-        # =========================
-        response_headers = {
-            "Content-Type": r.headers.get("Content-Type", "video/mp4"),
-            "Accept-Ranges": "bytes",
-        }
-
-        if "Content-Range" in r.headers:
-            response_headers["Content-Range"] = r.headers["Content-Range"]
-
-        if "Content-Length" in r.headers:
-            response_headers["Content-Length"] = r.headers["Content-Length"]
-
-        return StreamingResponse(
-            r.iter_content(chunk_size=8192),
-            status_code=206,
-            headers=response_headers
-        )
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# =========================
-# ROUTES TAMBAHAN
-# =========================
-
-@app.get("/")
-def home():
-    return {"message": "API Running 🚀"}
-
-
-@app.get("/list")
-def list_api():
-    return scrape_list(LIST_URL)
-
-
-@app.get("/search")
-def search(q: str = Query("")):
-    try:
-        url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
-        return scrape_list(url)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/episodes")
-def episodes(slug: str):
-    if not slug:
-        return {"error": "slug is required"}
-
-    total = get_total_episodes(slug)
-
-    return {
-        "slug": slug,
-        "total_episode": total
-    }
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(str(e).encode())
