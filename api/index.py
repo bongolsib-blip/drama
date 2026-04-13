@@ -36,7 +36,7 @@ def extract_slug(url: str) -> str:
 
 
 # =========================
-# SCRAPE LIST
+# SCRAPE LIST (FIX TITLE H3)
 # =========================
 def scrape_list(url):
     try:
@@ -48,11 +48,10 @@ def scrape_list(url):
         items = []
         for card in soup.find_all("a", class_="card-link-overlay"):
 
-            # 🔥 ambil title dari <h3>
+            # 🔥 FIX: ambil title dari <h3>
             title_tag = card.find("h3")
             title = title_tag.get_text(strip=True) if title_tag else ""
 
-            # href tetap dari <a>
             href = card.get("href")
 
             if href and not href.startswith("http"):
@@ -76,6 +75,7 @@ def scrape_list(url):
 
     except Exception as e:
         return {"error": str(e)}
+
 
 # =========================
 # TOTAL EPISODE
@@ -192,7 +192,6 @@ def list_all(max_page: int = 5, delay: float = 1):
         if isinstance(data, dict) and "items" in data:
             all_items.extend(data["items"])
 
-        # stop kalau sudah tidak ada next
         if not data.get("has_next"):
             break
 
