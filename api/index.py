@@ -125,27 +125,59 @@ def get_video_src_from_episode(url: str, ep: int):
 # STREAM VIDEO (🔥 SOLUSI UTAMA)
 # =========================
 @app.get("/stream")
-def stream(slug: str, ep: int):
+def stream(request: Request, slug: str, ep: int):
     try:
         watch_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}?lang=id-ID"
 
         play_url = get_video_src_from_episode(watch_url, ep)
-
         if not play_url:
             return {"error": "video not found"}
 
-        full_url = BASE_DOMAIN + play_url.replace("\\/", "/")
+        video_url = BASE_DOMAIN + play_url.replace("\\/", "/")
 
-        # 🔥 sama seperti Colab
-        r = requests.get(full_url, headers=HEADERS, stream=True)
+        # =========================
+        # 🔥 ambil range dari browser
+        # =========================
+        headers = {
+            "User-Agent": HEADERS["User-Agent"],
+            "Referer": BASE_DOMAIN,
+            "Origin": BASE_DOMAIN,
+        }
+
+        range_header = request.headers.get("range")
+        if range_header:
+            headers["Range"] = range_header
+        else:
+            headers["Range"] = "bytes=0-"
+
+        # =========================
+        # 🔥 request ke server video
+        # =========================
+        r = requests.get(video_url, headers=headers, stream=True)
+
+        # =========================
+        # 🔥 response ke browser
+        # =========================
+        response_headers = {
+            "Content-Type": r.headers.get("Content-Type", "video/mp4"),
+            "Accept-Ranges": "bytes",
+        }
+
+        if "Content-Range" in r.headers:
+            response_headers["Content-Range"] = r.headers["Content-Range"]
+
+        if "Content-Length" in r.headers:
+            response_headers["Content-Length"] = r.headers["Content-Length"]
 
         return StreamingResponse(
-            r.iter_content(chunk_size=1024 * 1024),
-            media_type=r.headers.get("Content-Type", "video/mp4")
+            r.iter_content(chunk_size=8192),
+            status_code=206,
+            headers=response_headers
         )
 
     except Exception as e:
         return {"error": str(e)}
+🚀 HASIL SETELAH
 
 
 # =========================
