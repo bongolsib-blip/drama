@@ -47,7 +47,16 @@ def scrape_list(url):
 
         items = []
         for card in soup.find_all("a", class_="card-link-overlay"):
-            title = card.get_text(strip=True)
+
+            # 🔥 FIX TITLE
+            title_tag = (
+                card.find("div", class_="card-title") or
+                card.find("h3") or
+                card.find("h2")
+            )
+
+            title = title_tag.get_text(strip=True) if title_tag else card.get_text(strip=True)
+
             href = card.get("href")
 
             if href and not href.startswith("http"):
@@ -60,7 +69,7 @@ def scrape_list(url):
                     "slug": extract_slug(href)
                 })
 
-        # cek next page
+        # pagination
         next_btn = soup.find("a", rel="next")
         has_next = True if next_btn else False
 
