@@ -3,7 +3,6 @@ from mangum import Mangum
 import requests
 from bs4 import BeautifulSoup
 import re
-import json
 from urllib.parse import urlparse
 
 app = FastAPI()
@@ -21,16 +20,9 @@ headers = {
 # =========================
 def extract_slug(url: str) -> str:
     try:
-        if not url:
-            return ""
-
         parsed = urlparse(url)
         path = parsed.path.strip("/")
-
-        if not path:
-            return ""
-
-        return path.split("/")[-1]
+        return path.split("/")[-1] if path else ""
     except:
         return ""
 
@@ -60,7 +52,7 @@ def scrape_list(url):
             if title and href:
                 items.append({
                     "title": title,
-                    "href": href.split("?")[0],  # 🔥 bersihkan query
+                    "href": href.split("?")[0],
                     "slug": extract_slug(href)
                 })
 
@@ -101,51 +93,45 @@ def get_total_episodes(url: str) -> int:
 
 
 # =========================
-# AMBIL SEMUA DATA EPISODE
+# GET VIDEO PER EPISODE
 # =========================
-def get_all_episode_data(url: str):
+def get_video_src_from_episode(slug: str, ep: int):
     try:
+        url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}?lang=id-ID"
         resp = requests.get(url, headers=headers, timeout=10)
 
         if resp.status_code != 200:
-            return []
+            return None
 
         html = resp.text
 
-        match = re.search(r'episodeItemsRaw\s*=\s*(\[\{.*?\}\]);', html, re.DOTALL)
-        if not match:
-            return []
+        # ambil iframe / video source
+        match = re.search(r'src="(https://[^"]+)"', html)
 
-        return json.loads(match.group(1))
+        if match:
+            return match.group(1)
+
+        return None
 
     except:
-        return []
+        return None
 
 
 # =========================
-# VIDEO PER EPISODE
+# GET ALL VIDEO (LIMIT BIAR GAK TIMEOUT)
 # =========================
-def get_video_src_from_episode(url: str, ep: int):
-    episodes = get_all_episode_data(url)
-
-    for item in episodes:
-        if int(item.get("number", 0)) == ep:
-            return item.get("play_url")
-
-    return None
-
-
-# =========================
-# SEMUA VIDEO
-# =========================
-def get_all_video_links(url: str):
-    episodes = get_all_episode_data(url)
-
+def get_all_video_links(slug: str, max_ep: int):
     result = []
-    for item in episodes:
+
+    # ⚠️ batasi biar tidak timeout di Vercel
+    limit = min(max_ep, 20)
+
+    for ep in range(1, limit + 1):
+        video = get_video_src_from_episode(slug, ep)
+
         result.append({
-            "episode": item.get("number"),
-            "video_url": item.get("play_url")
+            "episode": ep,
+            "video_url": video
         })
 
     return result
@@ -193,8 +179,7 @@ def video(slug: str, ep: int = 1):
     if not slug:
         return {"error": "slug is required"}
 
-    url = build_url_from_slug(slug)
-    video = get_video_src_from_episode(url, ep)
+    video = get_video_src_from_episode(slug, ep)
 
     return {
         "slug": slug,
@@ -209,10 +194,13 @@ def all_videos(slug: str):
         return {"error": "slug is required"}
 
     url = build_url_from_slug(slug)
-    videos = get_all_video_links(url)
+    total = get_total_episodes(url)
+
+    data = get_all_video_links(slug, total)
 
     return {
         "slug": slug,
-        "total": len(videos),
-        "data": videos
+        "total_episode": total,
+        "fetched": len(data),
+        "data": data
     }
