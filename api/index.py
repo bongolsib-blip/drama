@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import StreamingResponse
 from mangum import Mangum
 import requests
@@ -96,7 +96,7 @@ def get_total_episodes(slug: str) -> int:
 
 
 # =========================
-# GET VIDEO URL (INTERNAL)
+# GET VIDEO URL
 # =========================
 def get_video_src_from_episode(url: str, ep: int):
     resp = requests.get(url, headers=HEADERS)
@@ -122,7 +122,7 @@ def get_video_src_from_episode(url: str, ep: int):
 
 
 # =========================
-# STREAM VIDEO (🔥 SOLUSI UTAMA)
+# 🔥 STREAM VIDEO (FINAL FIX)
 # =========================
 @app.get("/stream")
 def stream(request: Request, slug: str, ep: int):
@@ -136,7 +136,7 @@ def stream(request: Request, slug: str, ep: int):
         video_url = BASE_DOMAIN + play_url.replace("\\/", "/")
 
         # =========================
-        # 🔥 ambil range dari browser
+        # HEADERS KE SERVER VIDEO
         # =========================
         headers = {
             "User-Agent": HEADERS["User-Agent"],
@@ -144,19 +144,18 @@ def stream(request: Request, slug: str, ep: int):
             "Origin": BASE_DOMAIN,
         }
 
+        # ambil range dari browser
         range_header = request.headers.get("range")
         if range_header:
             headers["Range"] = range_header
         else:
             headers["Range"] = "bytes=0-"
 
-        # =========================
-        # 🔥 request ke server video
-        # =========================
+        # request video
         r = requests.get(video_url, headers=headers, stream=True)
 
         # =========================
-        # 🔥 response ke browser
+        # RESPONSE KE CLIENT
         # =========================
         response_headers = {
             "Content-Type": r.headers.get("Content-Type", "video/mp4"),
@@ -177,7 +176,6 @@ def stream(request: Request, slug: str, ep: int):
 
     except Exception as e:
         return {"error": str(e)}
-🚀 HASIL SETELAH
 
 
 # =========================
