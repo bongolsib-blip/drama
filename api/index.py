@@ -46,13 +46,17 @@ def scrape_list(url):
         soup = BeautifulSoup(resp.text, "html.parser")
 
         items = []
-        for card in soup.find_all("a", class_="card-link-overlay"):
 
-            # 🔥 FIX: ambil title dari <h3>
-            title_tag = card.find("h3")
+        # 🔥 LOOP DARI ARTICLE
+        for card in soup.find_all("article", class_="card"):
+
+            # ✅ ambil title dari h3
+            title_tag = card.find("h3", class_="title")
             title = title_tag.get_text(strip=True) if title_tag else ""
 
-            href = card.get("href")
+            # ✅ ambil href dari a
+            link_tag = card.find("a", class_="card-link-overlay")
+            href = link_tag.get("href") if link_tag else None
 
             if href and not href.startswith("http"):
                 href = BASE_DOMAIN + href
