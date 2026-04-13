@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Query
+from fastapi.responses import StreamingResponse
 from mangum import Mangum
 import requests
 from bs4 import BeautifulSoup
@@ -12,8 +13,14 @@ handler = Mangum(app)
 BASE_DOMAIN = "https://narto-drama.com"
 LIST_URL = f"{BASE_DOMAIN}/?lang=id-ID"
 
-headers = {
+HEADERS = {
     "User-Agent": "Mozilla/5.0"
+}
+
+STREAM_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": BASE_DOMAIN,
+    "Origin": BASE_DOMAIN
 }
 
 # =========================
@@ -28,16 +35,12 @@ def extract_slug(url: str) -> str:
         return ""
 
 
-def build_url_from_slug(slug: str):
-    return f"{BASE_DOMAIN}/{slug}"
-
-
 # =========================
 # SCRAPE LIST
 # =========================
 def scrape_list(url):
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -66,9 +69,10 @@ def scrape_list(url):
 # =========================
 # TOTAL EPISODE
 # =========================
-def get_total_episodes(url: str) -> int:
+def get_total_episodes(slug: str) -> int:
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        url = f"{BASE_DOMAIN}/{slug}"
+        resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -94,12 +98,12 @@ def get_total_episodes(url: str) -> int:
 
 
 # =========================
-# CORE: AMBIL SEMUA VIDEO
+# CORE: AMBIL VIDEO
 # =========================
 def get_all_video_links(slug: str):
     try:
         url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?from=home?lang=id-ID/"
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=HEADERS, timeout=10)
 
         if resp.status_code != 200:
             return []
@@ -118,7 +122,6 @@ def get_all_video_links(slug: str):
             play_url = item.get("play_url")
 
             if play_url:
-                # 🔥 FIX UTAMA
                 play_url = play_url.replace("\\/", "/")
                 full_url = BASE_DOMAIN + play_url
             else:
@@ -136,9 +139,6 @@ def get_all_video_links(slug: str):
         return []
 
 
-# =========================
-# VIDEO PER EPISODE
-# =========================
 def get_video_src_from_episode(slug: str, ep: int):
     videos = get_all_video_links(slug)
 
@@ -177,8 +177,7 @@ def episodes(slug: str):
     if not slug:
         return {"error": "slug is required"}
 
-    url = build_url_from_slug(slug)
-    total = get_total_episodes(url)
+    total = get_total_episodes(slug)
 
     return {
         "slug": slug,
@@ -212,3 +211,20 @@ def all_videos(slug: str):
         "total": len(videos),
         "data": videos
     }
+
+
+# =========================
+# 🔥 STREAM PROXY (ANTI 403)
+# =========================
+@app.get("/stream")
+def stream(url: str):
+    try:
+        r = requests.get(url, headers=STREAM_HEADERS, stream=True)
+
+        return StreamingResponse(
+            r.iter_content(chunk_size=1024),
+            media_type=r.headers.get("Content-Type")
+        )
+
+    except Exception as e:
+        return {"error": str(e)}
