@@ -1,5 +1,4 @@
 from fastapi import FastAPI, Query
-from fastapi.responses import StreamingResponse
 from mangum import Mangum
 import requests
 from bs4 import BeautifulSoup
@@ -20,7 +19,8 @@ HEADERS = {
 STREAM_HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Referer": BASE_DOMAIN,
-    "Origin": BASE_DOMAIN
+    "Origin": BASE_DOMAIN,
+    "Accept": "*/*"
 }
 
 # =========================
@@ -98,7 +98,40 @@ def get_total_episodes(slug: str) -> int:
 
 
 # =========================
-# CORE: AMBIL VIDEO
+# 🔥 EXTRACT M3U8
+# =========================
+def extract_m3u8_from_play_url(play_url: str):
+    try:
+        full_url = BASE_DOMAIN + play_url.replace("\\/", "/")
+
+        resp = requests.get(
+            full_url,
+            headers=STREAM_HEADERS,
+            allow_redirects=False,
+            timeout=10
+        )
+
+        # CASE 1: redirect
+        if "Location" in resp.headers:
+            redirect_url = resp.headers["Location"]
+            if ".m3u8" in redirect_url:
+                return redirect_url
+
+        # CASE 2: response text
+        if ".m3u8" in resp.text:
+            for line in resp.text.splitlines():
+                if ".m3u8" in line:
+                    return line
+
+        return None
+
+    except Exception as e:
+        print("ERROR extract m3u8:", e)
+        return None
+
+
+# =========================
+# CORE: GET VIDEO LINKS
 # =========================
 def get_all_video_links(slug: str):
     try:
@@ -121,15 +154,13 @@ def get_all_video_links(slug: str):
         for item in episodes:
             play_url = item.get("play_url")
 
+            m3u8_url = None
             if play_url:
-                play_url = play_url.replace("\\/", "/")
-                full_url = BASE_DOMAIN + play_url
-            else:
-                full_url = None
+                m3u8_url = extract_m3u8_from_play_url(play_url)
 
             result.append({
                 "episode": int(item.get("number", 0)),
-                "video_url": full_url
+                "m3u8": m3u8_url
             })
 
         return result
@@ -137,16 +168,6 @@ def get_all_video_links(slug: str):
     except Exception as e:
         print("ERROR:", e)
         return []
-
-
-def get_video_src_from_episode(slug: str, ep: int):
-    videos = get_all_video_links(slug)
-
-    for item in videos:
-        if item["episode"] == ep:
-            return item["video_url"]
-
-    return None
 
 
 # =========================
@@ -185,20 +206,6 @@ def episodes(slug: str):
     }
 
 
-@app.get("/video")
-def video(slug: str, ep: int = 1):
-    if not slug:
-        return {"error": "slug is required"}
-
-    video_url = get_video_src_from_episode(slug, ep)
-
-    return {
-        "slug": slug,
-        "episode": ep,
-        "video_url": video_url
-    }
-
-
 @app.get("/videos")
 def all_videos(slug: str):
     if not slug:
@@ -211,20 +218,3 @@ def all_videos(slug: str):
         "total": len(videos),
         "data": videos
     }
-
-
-# =========================
-# 🔥 STREAM PROXY (ANTI 403)
-# =========================
-@app.get("/stream")
-def stream(url: str):
-    try:
-        r = requests.get(url, headers=STREAM_HEADERS, stream=True)
-
-        return StreamingResponse(
-            r.iter_content(chunk_size=1024),
-            media_type=r.headers.get("Content-Type")
-        )
-
-    except Exception as e:
-        return {"error": str(e)}
