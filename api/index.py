@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Query
+from fastapi.responses import StreamingResponse
 from mangum import Mangum
 import requests
 from bs4 import BeautifulSoup
@@ -13,14 +14,11 @@ BASE_DOMAIN = "https://narto-drama.com"
 LIST_URL = f"{BASE_DOMAIN}/?lang=id-ID"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
-}
-
-STREAM_HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": BASE_DOMAIN,
-    "Origin": BASE_DOMAIN,
-    "Accept": "*/*"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0 Safari/537.36"
+    )
 }
 
 # =========================
@@ -98,98 +96,60 @@ def get_total_episodes(slug: str) -> int:
 
 
 # =========================
-# 🔥 EXTRACT M3U8
+# GET VIDEO URL (INTERNAL)
 # =========================
-def extract_m3u8_from_play_url(play_url: str):
+def get_video_src_from_episode(url: str, ep: int):
+    resp = requests.get(url, headers=HEADERS)
+    if resp.status_code != 200:
+        return None
+
+    html = resp.text
+
+    match = re.search(r'episodeItemsRaw\s*=\s*(\[\{.*?\}\]);', html, re.DOTALL)
+    if not match:
+        return None
+
     try:
+        episodes = json.loads(match.group(1))
+    except:
+        return None
+
+    for item in episodes:
+        if int(item.get("number", 0)) == ep:
+            return item.get("play_url")
+
+    return None
+
+
+# =========================
+# STREAM VIDEO (🔥 SOLUSI UTAMA)
+# =========================
+@app.get("/stream")
+def stream(slug: str, ep: int):
+    try:
+        watch_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}?lang=id-ID"
+
+        play_url = get_video_src_from_episode(watch_url, ep)
+
+        if not play_url:
+            return {"error": "video not found"}
+
         full_url = BASE_DOMAIN + play_url.replace("\\/", "/")
 
-        session = requests.Session()
+        # 🔥 sama seperti Colab
+        r = requests.get(full_url, headers=HEADERS, stream=True)
 
-        # 🔥 Step 1: buka homepage dulu (ambil cookie)
-        session.get(BASE_DOMAIN, headers=HEADERS)
-
-        # 🔥 Step 2: request play_url (FOLLOW REDIRECT)
-        resp = session.get(
-            full_url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Referer": BASE_DOMAIN,
-                "Origin": BASE_DOMAIN,
-                "Accept": "*/*"
-            },
-            allow_redirects=True,
-            timeout=10
+        return StreamingResponse(
+            r.iter_content(chunk_size=1024 * 1024),
+            media_type=r.headers.get("Content-Type", "video/mp4")
         )
 
-        # =========================
-        # 🔥 CASE 1: final URL sudah m3u8
-        # =========================
-        if ".m3u8" in resp.url:
-            return resp.url
-
-        # =========================
-        # 🔥 CASE 2: isi response adalah m3u8
-        # =========================
-        if "#EXTM3U" in resp.text:
-            return resp.url
-
-        # =========================
-        # 🔥 CASE 3: cari di response
-        # =========================
-        match = re.search(r'(https?://[^\s"\']+\.m3u8)', resp.text)
-        if match:
-            return match.group(1)
-
-        return None
-
     except Exception as e:
-        print("ERROR extract m3u8:", e)
-        return None
+        return {"error": str(e)}
 
 
 # =========================
-# CORE: GET VIDEO LINKS
-# =========================
-def get_all_video_links(slug: str):
-    try:
-        url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?from=home?lang=id-ID/"
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-
-        if resp.status_code != 200:
-            return []
-
-        html = resp.text
-
-        match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', html)
-        if not match:
-            return []
-
-        episodes = json.loads(match.group(1))
-
-        result = []
-
-        for item in episodes:
-            play_url = item.get("play_url")
-
-            m3u8_url = None
-            if play_url:
-                m3u8_url = extract_m3u8_from_play_url(play_url)
-
-            result.append({
-                "episode": int(item.get("number", 0)),
-                "m3u8": m3u8_url
-            })
-
-        return result
-
-    except Exception as e:
-        print("ERROR:", e)
-        return []
-
-
-# =========================
-# ROUTES
+# ROUTES TAMBAHAN
 # =========================
 
 @app.get("/")
@@ -221,18 +181,4 @@ def episodes(slug: str):
     return {
         "slug": slug,
         "total_episode": total
-    }
-
-
-@app.get("/videos")
-def all_videos(slug: str):
-    if not slug:
-        return {"error": "slug is required"}
-
-    videos = get_all_video_links(slug)
-
-    return {
-        "slug": slug,
-        "total": len(videos),
-        "data": videos
     }
