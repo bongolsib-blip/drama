@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from mangum import Mangum
 import requests
@@ -9,6 +10,14 @@ from urllib.parse import urlparse
 import time
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 🔥 bisa dibatasi nanti
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 handler = Mangum(app)
 
 BASE_DOMAIN = "https://narto-drama.com"
