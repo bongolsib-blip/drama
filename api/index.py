@@ -64,29 +64,21 @@ def scrape_list(url):
 
         for card in soup.find_all("article", class_="card"):
 
-            # TITLE
             title_tag = card.find("h3", class_="title")
             title = title_tag.get_text(strip=True) if title_tag else ""
 
-            # LINK
             link_tag = card.find("a", class_="card-link-overlay")
             href = link_tag.get("href") if link_tag else None
 
             if href and not href.startswith("http"):
                 href = BASE_DOMAIN + href
 
-            # THUMBNAIL
             img_tag = card.find("img", class_="poster")
             thumbnail = img_tag.get("src") if img_tag else None
             if thumbnail and thumbnail.startswith("/"):
                 thumbnail = BASE_DOMAIN + thumbnail
 
-            # TAGS
             tags = [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
-
-            # EPISODE BADGE
-            ep_tag = card.find("div", class_="episode-badge")
-            episode_badge = ep_tag.get_text(strip=True) if ep_tag else None
 
             if title and href:
                 items.append({
@@ -94,15 +86,23 @@ def scrape_list(url):
                     "href": href.split("?")[0],
                     "slug": extract_slug(href),
                     "thumbnail": thumbnail,
-                    "tags": tags,
-                    "episode_badge": episode_badge
+                    "tags": tags
                 })
 
-        next_btn = soup.find("a", rel="next")
+        # =========================
+        # 🔥 NEXT PAGE FIX
+        # =========================
+        has_next = False
+
+        pager = soup.find("div", class_="pager")
+        if pager:
+            next_btn = pager.find("a", class_="pager-link", string=lambda x: x and "Next" in x)
+            if next_btn:
+                has_next = True
 
         return {
             "items": items,
-            "has_next": True if next_btn else False
+            "has_next": has_next
         }
 
     except Exception as e:
