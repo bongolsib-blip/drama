@@ -220,11 +220,32 @@ def get_all_video_links(slug: str):
 
 
 def get_video_src(slug: str, ep: int):
-    videos = get_all_video_links(slug)
-    for v in videos:
-        if v["episode"] == ep:
-            return v["video_url"]
-    return None
+    try:
+        # =========================
+        # STEP 1: ambil dari method lama
+        # =========================
+        videos = get_all_video_links(slug)
+
+        for v in videos:
+            if v["episode"] == ep:
+                url = v["video_url"]
+
+                # kalau bukan proxy → langsung pakai
+                if url and not url.startswith("/stream/proxy"):
+                    return url
+
+        # =========================
+        # STEP 2: FALLBACK 🔥
+        # =========================
+        refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep-1}/refresh-source?lang=id-ID&force=1"
+
+        resp = requests.get(refresh_url, headers=HEADERS, timeout=10)
+        data = resp.json()
+
+        return data.get("direct_play_url")
+
+    except Exception as e:
+        return None
 
 
 # =========================
