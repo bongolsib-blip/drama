@@ -218,11 +218,12 @@ def get_all_video_links(slug: str):
 
     return result
 
+video_cache = {}
 
 def get_video_src(slug: str, ep: int):
     try:
         # =========================
-        # STEP 1: ambil dari method lama
+        # STEP 1: method lama
         # =========================
         videos = get_all_video_links(slug)
 
@@ -235,14 +236,31 @@ def get_video_src(slug: str, ep: int):
                     return url
 
         # =========================
-        # STEP 2: FALLBACK 🔥
+        # STEP 2: fallback + retry 🔥
         # =========================
+
+        if key in video_cache:
+            return video_cache[key]
+        
         refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep-1}/refresh-source?lang=id-ID&force=1"
 
-        resp = requests.get(refresh_url, headers=HEADERS, timeout=10)
-        data = resp.json()
+        for _ in range(5):  # retry 5x
+            try:
+                resp = requests.get(refresh_url, headers=HEADERS, timeout=10)
+                data = resp.json()
 
-        return data.get("direct_play_url")
+                url = data.get("direct_play_url")
+
+                if url and "m3u8" in url:
+                    video_cache[key] = url
+                    return url
+
+            except:
+                pass
+
+            time.sleep(2)
+
+        return None
 
     except Exception as e:
         return None
@@ -329,9 +347,13 @@ def video(slug: str, ep: int = 1):
 
 @app.get("/stream")
 def stream(url: str):
-    r = requests.get(url, headers=STREAM_HEADERS, stream=True)
+    try:
+        r = requests.get(url, headers=STREAM_HEADERS, stream=True, timeout=10)
 
-    return StreamingResponse(
-        r.iter_content(chunk_size=1024),
-        media_type=r.headers.get("Content-Type")
-    )
+        return StreamingResponse(
+            r.iter_content(chunk_size=1024),
+            media_type=r.headers.get("Content-Type", "application/vnd.apple.mpegurl")
+        )
+
+    except:
+        return {"error": "stream failed"}
