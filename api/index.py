@@ -242,7 +242,7 @@ def get_video_src(slug: str, ep: int):
         if key in video_cache:
             return video_cache[key]
         
-        refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep-1}/refresh-source?lang=id-ID&force=1"
+        refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source?lang=id-ID&force=1"
 
         for _ in range(5):  # retry 5x
             try:
