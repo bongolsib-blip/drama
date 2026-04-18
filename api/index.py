@@ -560,7 +560,9 @@ def get_by_genre(genre: str, page: int = 1, limit: int = 20):
         "genre": genre,
         "total": len(data),
         "page": page,
-        "results": data[start:end]
+        "data": {
+            "items": result[start:end]
+        }
     }
 
 @app.get("/filter")
