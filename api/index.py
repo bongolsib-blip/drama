@@ -21,6 +21,10 @@ app.add_middleware(
 handler = Mangum(app)
 
 BASE_DOMAIN = "https://narto-drama.com"
+ALL_DRAMAS = []
+GENRE_INDEX = {}
+LAST_UPDATE = 0
+CACHE_TTL = 60 * 30  # 30 menit
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 Safari/537.36",
@@ -33,6 +37,184 @@ STREAM_HEADERS = {
     "Referer": BASE_DOMAIN,
     "Origin": BASE_DOMAIN
 }
+
+# =========================
+# genere
+# =========================
+def normalize_genres(tags, title):
+    genres = set()
+
+    # 🔥 mapping ke 10 genre utama
+    tag_map = {
+        # Romance
+        "romantis": "Romance",
+        "romansa": "Romance",
+        "cinta": "Romance",
+        "love": "Romance",
+        "nikah": "Romance",
+
+        # Drama
+        "ceo": "Drama",
+        "kantoran": "Drama",
+        "kehidupan": "Drama",
+        "modern": "Drama",
+
+        # Comedy
+        "komedi": "Comedy",
+        "lucu": "Comedy",
+        "kocak": "Comedy",
+
+        # Action
+        "aksi": "Action",
+        "dewa perang": "Action",
+        "perang": "Action",
+        "pertarungan": "Action",
+
+        # Fantasy
+        "fantasi": "Fantasy",
+        "sistem": "Fantasy",
+        "reinkarnasi": "Fantasy",
+        "time travel": "Fantasy",
+        "kelahiran kembali": "Fantasy",
+        "kekuatan super": "Fantasy",
+        "transmigrasi": "Fantasy",
+
+        # Family
+        "keluarga": "Family",
+        "anak": "Family",
+        "ayah": "Family",
+        "ibu": "Family",
+
+        # Business
+        "bisnis": "Business",
+        "miliarder": "Business",
+        "konglomerat": "Business",
+        "kaya": "Business",
+        "direktur": "Business",
+
+        # Crime
+        "mafia": "Crime",
+        "kriminal": "Crime",
+        "penjara": "Crime",
+        "pembunuh": "Crime",
+
+        # Mystery
+        "misteri": "Mystery",
+        "rahasia": "Mystery",
+        "detektif": "Mystery",
+
+        # Sci-Fi
+        "kiamat": "Sci-Fi",
+        "apokalips": "Sci-Fi",
+        "monster": "Sci-Fi",
+        "alien": "Sci-Fi"
+    }
+
+    # =========================
+    # dari TAG
+    # =========================
+    for tag in tags:
+        t = tag.lower()
+
+        for key, val in tag_map.items():
+            if key in t:
+                genres.add(val)
+
+    # =========================
+    # fallback dari JUDUL 🔥
+    # =========================
+    t = title.lower()
+
+    if "cinta" in t or "nikah" in t:
+        genres.add("Romance")
+
+    if "bos" in t or "ceo" in t:
+        genres.add("Drama")
+        genres.add("Business")
+
+    if "balas" in t or "dendam" in t:
+        genres.add("Action")
+
+    if "sistem" in t or "reinkarnasi" in t:
+        genres.add("Fantasy")
+
+    if "keluarga" in t or "anak" in t:
+        genres.add("Family")
+
+    if "mafia" in t or "penjara" in t:
+        genres.add("Crime")
+
+    if "rahasia" in t:
+        genres.add("Mystery")
+
+    if "kiamat" in t:
+        genres.add("Sci-Fi")
+
+    # =========================
+    # fallback terakhir
+    # =========================
+    if not genres:
+        genres.add("Drama")
+
+    return list(genres)
+
+# -------------------
+VALID_GENRES = {
+    "Romance","Drama","Comedy","Action","Fantasy",
+    "Family","Business","Crime","Mystery","Sci-Fi"
+}
+
+def clean_genres(genres):
+    return [g for g in genres if g in VALID_GENRES]
+
+# ---------------
+
+def build_index(max_page=20, delay=0.5):
+    global ALL_DRAMAS, GENRE_INDEX, LAST_UPDATE
+
+    ALL_DRAMAS = []
+    GENRE_INDEX = {}
+
+    for page in range(1, max_page + 1):
+        url = f"{BASE_DOMAIN}/?lang=id-ID&page={page}"
+        data = scrape_list(url)
+
+        if "items" not in data:
+            break
+
+        for item in data["items"]:
+            # =========================
+            # GENRE PROCESSING 🔥
+            # =========================
+            genres = normalize_genres(item["tags"], item["title"])
+            genres = clean_genres(genres)
+            item["genres"] = genres
+
+            # =========================
+            # SAVE
+            # =========================
+            ALL_DRAMAS.append(item)
+
+            for g in genres:
+                if g not in GENRE_INDEX:
+                    GENRE_INDEX[g] = []
+                GENRE_INDEX[g].append(item)
+
+        if not data.get("has_next"):
+            break
+
+        time.sleep(delay)
+
+    LAST_UPDATE = time.time()
+# -----------------
+
+def ensure_cache():
+    global LAST_UPDATE
+
+    if time.time() - LAST_UPDATE > CACHE_TTL or not ALL_DRAMAS:
+        build_index()
+
+# ----------------
 
 # =========================
 # UTIL
@@ -238,7 +420,7 @@ def get_video_src(slug: str, ep: int):
         # =========================
         # STEP 2: fallback + retry 🔥
         # =========================
-
+        key = f"{slug}_{ep}"
         if key in video_cache:
             return video_cache[key]
         
@@ -357,3 +539,53 @@ def stream(url: str):
 
     except:
         return {"error": "stream failed"}
+
+@app.get("/genres")
+def get_genres():
+    ensure_cache()
+    return {
+        "genres": list(GENRE_INDEX.keys())
+    }
+
+@app.get("/genre/{genre}")
+def get_by_genre(genre: str, page: int = 1, limit: int = 20):
+    ensure_cache()
+
+    data = GENRE_INDEX.get(genre, [])
+
+    start = (page - 1) * limit
+    end = start + limit
+
+    return {
+        "genre": genre,
+        "total": len(data),
+        "page": page,
+        "results": data[start:end]
+    }
+
+@app.get("/filter")
+def filter_api(
+    genre: str = None,
+    keyword: str = None,
+    page: int = 1,
+    limit: int = 20
+):
+    ensure_cache()
+
+    data = ALL_DRAMAS
+
+    if genre:
+        data = GENRE_INDEX.get(genre, [])
+
+    if keyword:
+        keyword = keyword.lower()
+        data = [d for d in data if keyword in d["title"].lower()]
+
+    start = (page - 1) * limit
+    end = start + limit
+
+    return {
+        "total": len(data),
+        "page": page,
+        "results": data[start:end]
+    }
