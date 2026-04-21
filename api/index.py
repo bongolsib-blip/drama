@@ -414,7 +414,7 @@ def get_video_src(slug: str, ep: int):
                 url = v["video_url"]
 
                 # kalau bukan proxy → langsung pakai
-                if url and "proxy" in url:
+                if url and not url.startswith("/stream/proxy"):
                     return url
 
         # =========================
