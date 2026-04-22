@@ -527,50 +527,40 @@ def video(slug: str, ep: int = 1):
     }
 
 
+import httpx
+
 @app.get("/stream")
-def stream(url: str):
-    try:
-        # 1. Gunakan Header yang sangat spesifik
-        # Sesuaikan Referer dengan domain tempat video itu tertanam
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://narto-drama.com/", # WAJIB SAMA DENGAN WEB ASLI
-            "Accept": "*/*",
-            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Range": "bytes=0-", # Memancing server agar mengirimkan data video
-            "Origin": "https://narto-drama.com",
-            "Sec-Fetch-Dest": "video",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "cross-site",
-        }
+async def stream(url: str):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Referer": "https://narto-drama.com/",
+        "Origin": "https://narto-drama.com",
+        "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "video",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
+    }
 
-        # 2. Gunakan requests.Session agar cookie tertangani otomatis (jika ada)
-        session = requests.Session()
+    async with httpx.AsyncClient(http2=True) as client:
+        # Gunakan follow_redirects=True karena TikTok sering melakukan redirect CDN
+        req = client.build_request("GET", url, headers=headers)
+        r = await client.send(req, stream=True)
         
-        # Kita lakukan pre-fetch kecil untuk 'mengambil' otorisasi jika perlu
-        r = session.get(url, headers=headers, stream=True, timeout=15)
-        
-        # Jika masih 403, TikTok mungkin butuh cookie dari domain utama
-        if r.status_code == 403:
-             return {"error": "TikTok masih menolak (403). Coba bersihkan cache browser atau cek session."}
-
-        # 3. Teruskan stream ke frontend
-        def generate():
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                yield chunk
+        if r.status_code != 200:
+            return {"error": f"TikTok Reject with status {r.status_code}", "debug": url}
 
         return StreamingResponse(
-            generate(),
+            r.aiter_bytes(),
             media_type="video/mp4",
             headers={
                 "Accept-Ranges": "bytes",
                 "Content-Length": r.headers.get("Content-Length", ""),
-                "Access-Control-Allow-Origin": "*", # Penting untuk CORS di Next.js
             }
         )
 
-    except Exception as e:
-        return {"error": f"Stream failed: {str(e)}"}
+
 @app.get("/genres")
 def get_genres():
     ensure_cache()
