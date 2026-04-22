@@ -426,7 +426,7 @@ def get_video_src(slug: str, ep: int):
             if resp.status_code == 200:
                 data = resp.json()
                 # Ambil direct_play_url (bisa .mp4 atau .m3u8)
-                url = data.get("direct_play_url")
+                url = data.get("play_url")
 
                 if url:
                     # Simpan ke cache agar pemanggilan berikutnya instan
