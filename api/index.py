@@ -530,39 +530,47 @@ def video(slug: str, ep: int = 1):
 @app.get("/stream")
 def stream(url: str):
     try:
-        # Gunakan header yang sangat mirip dengan browser asli
+        # 1. Gunakan Header yang sangat spesifik
+        # Sesuaikan Referer dengan domain tempat video itu tertanam
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Referer": "https://www.tiktok.com/",
-            "Accept-Encoding": "identity", # Memastikan tidak di-kompres otomatis
-            "Connection": "keep-alive",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://narto-drama.com/", # WAJIB SAMA DENGAN WEB ASLI
+            "Accept": "*/*",
+            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Range": "bytes=0-", # Memancing server agar mengirimkan data video
+            "Origin": "https://narto-drama.com",
+            "Sec-Fetch-Dest": "video",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site",
         }
 
-        # Tambahkan stream=True agar data mengalir, bukan didownload semua dulu
-        r = requests.get(url, headers=headers, stream=True, timeout=15)
+        # 2. Gunakan requests.Session agar cookie tertangani otomatis (jika ada)
+        session = requests.Session()
         
-        # Jika TikTok tetap mengembalikan 403, kita tangkap di sini
+        # Kita lakukan pre-fetch kecil untuk 'mengambil' otorisasi jika perlu
+        r = session.get(url, headers=headers, stream=True, timeout=15)
+        
+        # Jika masih 403, TikTok mungkin butuh cookie dari domain utama
         if r.status_code == 403:
-            return {"error": "TikTok memblokir akses proxy ini (403 Forbidden)"}
-            
-        r.raise_for_status()
+             return {"error": "TikTok masih menolak (403). Coba bersihkan cache browser atau cek session."}
 
+        # 3. Teruskan stream ke frontend
         def generate():
-            for chunk in r.iter_content(chunk_size=1024 * 1024): # 1MB chunks
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
                 yield chunk
 
         return StreamingResponse(
             generate(),
-            media_type=r.headers.get("Content-Type", "video/mp4"),
+            media_type="video/mp4",
             headers={
                 "Accept-Ranges": "bytes",
                 "Content-Length": r.headers.get("Content-Length", ""),
+                "Access-Control-Allow-Origin": "*", # Penting untuk CORS di Next.js
             }
         )
 
     except Exception as e:
         return {"error": f"Stream failed: {str(e)}"}
-
 @app.get("/genres")
 def get_genres():
     ensure_cache()
