@@ -530,24 +530,36 @@ def video(slug: str, ep: int = 1):
 @app.get("/stream")
 def stream(url: str):
     try:
-        # Kirim header yang mirip dengan browser/aplikasi asli
+        # Gunakan header yang sangat mirip dengan browser asli
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.tiktok.com/", # Atau domain asal drama tersebut
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Referer": "https://www.tiktok.com/",
+            "Accept-Encoding": "identity", # Memastikan tidak di-kompres otomatis
+            "Connection": "keep-alive",
         }
-        
-        # Stream video dari TikTok ke server kita, lalu teruskan ke user
+
+        # Tambahkan stream=True agar data mengalir, bukan didownload semua dulu
         r = requests.get(url, headers=headers, stream=True, timeout=15)
+        
+        # Jika TikTok tetap mengembalikan 403, kita tangkap di sini
+        if r.status_code == 403:
+            return {"error": "TikTok memblokir akses proxy ini (403 Forbidden)"}
+            
         r.raise_for_status()
 
+        def generate():
+            for chunk in r.iter_content(chunk_size=1024 * 1024): # 1MB chunks
+                yield chunk
+
         return StreamingResponse(
-            r.iter_content(chunk_size=1024 * 1024), # 1MB chunk agar lebih lancar
+            generate(),
             media_type=r.headers.get("Content-Type", "video/mp4"),
             headers={
-                "Content-Disposition": "inline",
-                "Accept-Ranges": "bytes"
+                "Accept-Ranges": "bytes",
+                "Content-Length": r.headers.get("Content-Length", ""),
             }
         )
+
     except Exception as e:
         return {"error": f"Stream failed: {str(e)}"}
 
