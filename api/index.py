@@ -532,35 +532,50 @@ def video(slug: str, ep: int = 1):
 
 @app.get("/stream")
 async def stream(url: str):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Referer": "https://narto-drama.com/",
-        "Origin": "https://narto-drama.com",
-        "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Connection": "keep-alive",
-        "Sec-Fetch-Dest": "video",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "cross-site",
-    }
+    try:
+        # Header harus sangat mirip dengan browser agar tidak 403
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Referer": "https://www.tiktok.com/",
+        }
 
-    async with httpx.AsyncClient(http2=True) as client:
-        # Gunakan follow_redirects=True karena TikTok sering melakukan redirect CDN
-        req = client.build_request("GET", url, headers=headers)
-        r = await client.send(req, stream=True)
-        
-        if r.status_code != 200:
-            return {"error": f"TikTok Reject with status {r.status_code}", "debug": url}
+        # Gunakan timeout yang agak lama karena video butuh waktu untuk buffering
+        timeout = httpx.Timeout(10.0, connect=60.0, read=None, write=None)
+
+        # Inisialisasi client asinkron
+        client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+
+        # Buat request ke TikTok
+        # Gunakan stream=True agar kita tidak mendownload seluruh video ke RAM server
+        async def generate_video_stream():
+            try:
+                async with client.stream("GET", url, headers=headers) as r:
+                    # Jika TikTok menolak (403/404), kita berhenti
+                    if r.status_code != 200:
+                        yield b"Error: TikTok returned status " + str(r.status_code).encode()
+                        return
+
+                    # Kirim data per chunk (per potong) ke browser user
+                    async for chunk in r.aiter_bytes(chunk_size=1024 * 512): # 512KB per chunk
+                        yield chunk
+            except Exception as e:
+                print(f"Stream Error: {e}")
+            finally:
+                await client.aclose() # Pastikan koneksi ditutup
 
         return StreamingResponse(
-            r.aiter_bytes(),
+            generate_video_stream(),
             media_type="video/mp4",
             headers={
                 "Accept-Ranges": "bytes",
-                "Content-Length": r.headers.get("Content-Length", ""),
+                "Content-Disposition": "inline",
+                "Access-Control-Allow-Origin": "*", # Mencegah CORS error lagi
             }
         )
 
+    except Exception as e:
+        # Ini akan menangkap error sebelum stream dimulai
+        return {"error": f"Internal Server Error: {str(e)}"}
 
 @app.get("/genres")
 def get_genres():
