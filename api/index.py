@@ -8,6 +8,7 @@ import re
 import json
 from urllib.parse import urlparse
 import time
+import httpx
 
 app = FastAPI()
 app.add_middleware(
@@ -527,7 +528,7 @@ def video(slug: str, ep: int = 1):
     }
 
 
-import httpx
+
 
 @app.get("/stream")
 async def stream(url: str):
