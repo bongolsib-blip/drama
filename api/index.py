@@ -530,15 +530,26 @@ def video(slug: str, ep: int = 1):
 @app.get("/stream")
 def stream(url: str):
     try:
-        r = requests.get(url, headers=STREAM_HEADERS, stream=True, timeout=10)
+        # Kirim header yang mirip dengan browser/aplikasi asli
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.tiktok.com/", # Atau domain asal drama tersebut
+        }
+        
+        # Stream video dari TikTok ke server kita, lalu teruskan ke user
+        r = requests.get(url, headers=headers, stream=True, timeout=15)
+        r.raise_for_status()
 
         return StreamingResponse(
-            r.iter_content(chunk_size=1024),
-            media_type=r.headers.get("Content-Type", "application/vnd.apple.mpegurl")
+            r.iter_content(chunk_size=1024 * 1024), # 1MB chunk agar lebih lancar
+            media_type=r.headers.get("Content-Type", "video/mp4"),
+            headers={
+                "Content-Disposition": "inline",
+                "Accept-Ranges": "bytes"
+            }
         )
-
-    except:
-        return {"error": "stream failed"}
+    except Exception as e:
+        return {"error": f"Stream failed: {str(e)}"}
 
 @app.get("/genres")
 def get_genres():
