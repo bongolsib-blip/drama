@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import re
 import json
 from urllib.parse import urlparse
+from urllib.parse import unquote
 import time
 import httpx
 
@@ -532,34 +533,40 @@ def video(slug: str, ep: int = 1):
 
 @app.get("/stream")
 async def stream(url: str):
-    # 1. Bersihkan URL (Hapus double encoding jika ada)
-    from urllib.parse import unquote
-    clean_url = unquote(url) 
+    # 1. Bersihkan Double Encoding
+    # decode %253D menjadi %3D, lalu menjadi =
+    decoded_url = unquote(unquote(url)) 
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Referer": "https://www.tiktok.com/",
-        "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
     }
 
-    async with httpx.AsyncClient(http2=True, follow_redirects=True) as client:
-        # Pancing dengan membuka TikTok utama (Opsional tapi membantu)
-        # await client.get("https://www.tiktok.com/", headers=headers)
+    client = httpx.AsyncClient(follow_redirects=True, timeout=20.0)
+    
+    try:
+        # Gunakan request biasa dulu untuk cek status sebelum streaming
+        # Ini mencegah error 500 jika TikTok kirim 403
+        response = await client.get(decoded_url, headers=headers)
+        
+        if response.status_code != 200:
+            return JSONResponse(
+                status_code=response.status_code,
+                content={"error": f"TikTok rejected with {response.status_code}", "url": decoded_url}
+            )
 
-        try:
-            async with client.stream("GET", clean_url, headers=headers, timeout=15) as r:
-                if r.status_code == 403:
-                    # Log untuk debug di Vercel
-                    print(f"DI TOLAK TIKTOK: {clean_url}")
-                    return StreamingResponse(content="Forbidden", status_code=403)
+        # 2. Jika OK, baru buat generator stream
+        async def generate():
+            async with client.stream("GET", decoded_url, headers=headers) as r:
+                async for chunk in r.aiter_bytes(chunk_size=1024*512):
+                    yield chunk
+            await client.aclose()
 
-                return StreamingResponse(
-                    r.aiter_bytes(),
-                    media_type="video/mp4",
-                    headers={"Accept-Ranges": "bytes"}
-                )
-        except Exception as e:
-            return {"error": str(e)}
+        return StreamingResponse(generate(), media_type="video/mp4")
+
+    except Exception as e:
+        await client.aclose()
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/genres")
 def get_genres():
