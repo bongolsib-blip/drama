@@ -404,7 +404,7 @@ def get_all_video_links(slug: str):
     return result
 
 video_cache = {}
-CACHE_TTL = 60 * 5  # 5 menit
+CACHE_TTL = 0  # 5 menit
 
 def get_video_src(slug: str, ep: int):
     key = f"{slug}_{ep}"
