@@ -404,42 +404,35 @@ def get_all_video_links(slug: str):
     return result
 
 video_cache = {}
+CACHE_TTL = 60 * 5  # 5 menit
 
 def get_video_src(slug: str, ep: int):
     key = f"{slug}_{ep}"
-    
-    # 1. Cek Cache dulu agar tidak spam request ke target
+    now = time.time()
+
+    # cek cache + expiry
     if key in video_cache:
-        # Kita cek apakah link masih fresh (biasanya link tiktok expired dalam 1-2 jam)
-        # Untuk sementara kita return saja yang ada di cache
-        return video_cache[key]
-    
-    # 2. Endpoint refresh-source (Langsung tembak target)
-    # Kita gunakan parameter force=1 untuk memastikan server target memberikan link baru
+        cached = video_cache[key]
+        if now - cached["time"] < CACHE_TTL:
+            return cached["url"]
+
     refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source?lang=id-ID&force=1"
 
-    # 3. Looping Retry yang lebih bersih
-    for attempt in range(5): 
+    for _ in range(5):
         try:
             resp = requests.get(refresh_url, headers=HEADERS, timeout=10)
-            
             if resp.status_code == 200:
-                data = resp.json()
-                # Ambil direct_play_url (bisa .mp4 atau .m3u8)
-                url = data.get("play_url")
-
+                url = resp.json().get("play_url")
                 if url:
-                    # Simpan ke cache agar pemanggilan berikutnya instan
-                    video_cache[key] = url
+                    video_cache[key] = {
+                        "url": url,
+                        "time": now
+                    }
                     return url
-            
-            # Jika status code bukan 200 (misal 429 too many requests), tunggu sebentar
-            print(f"Attempt {attempt + 1} failed for {slug} ep {ep}. Retrying...")
-            
-        except Exception as e:
-            print(f"Error on attempt {attempt + 1}: {e}")
-            
-        time.sleep(1.5) # Jeda waktu antar retry
+        except:
+            pass
+
+        time.sleep(1.5)
 
     return None
 
