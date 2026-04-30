@@ -518,6 +518,8 @@ def video(slug: str, ep: int = 1):
 
 
 
+from fastapi import Request
+
 @app.get("/stream")
 async def stream(request: Request, url: str):
     decoded_url = unquote(unquote(url))
@@ -529,46 +531,32 @@ async def stream(request: Request, url: str):
         "Accept": "*/*",
     }
 
-    # ambil range dari browser
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
 
-    async def generate():
-        async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
-            async with client.stream("GET", decoded_url, headers=headers) as r:
-                
-                if r.status_code not in (200, 206):
-                    print("❌ upstream error:", r.status_code)
-                    yield b""
-                    return
+    async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
+        async with client.stream("GET", decoded_url, headers=headers) as r:
 
-                async for chunk in r.aiter_bytes(chunk_size=1024 * 512):
-                    yield chunk
+            # 🔥 ambil header LANGSUNG dari response asli
+            response_headers = {
+                "Content-Type": r.headers.get("content-type", "video/mp4"),
+                "Accept-Ranges": "bytes",
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "no-cache",
+            }
 
-    # 🔥 HEAD request untuk ambil header penting
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
-        head = await client.head(decoded_url, headers=headers)
+            if "content-length" in r.headers:
+                response_headers["Content-Length"] = r.headers["content-length"]
 
-    response_headers = {
-        "Content-Type": head.headers.get("content-type", "video/mp4"),
-        "Accept-Ranges": "bytes",
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "no-cache",
-    }
+            if "content-range" in r.headers:
+                response_headers["Content-Range"] = r.headers["content-range"]
 
-    if "content-length" in head.headers:
-        response_headers["Content-Length"] = head.headers["content-length"]
-
-    if "content-range" in head.headers:
-        response_headers["Content-Range"] = head.headers["content-range"]
-
-    return StreamingResponse(
-        generate(),
-        status_code=206 if range_header else 200,
-        headers=response_headers,
-    )
-
+            return StreamingResponse(
+                r.aiter_bytes(chunk_size=1024 * 512),
+                status_code=r.status_code,
+                headers=response_headers,
+            )
 @app.get("/genres")
 def get_genres():
     ensure_cache()
