@@ -519,53 +519,35 @@ def video(slug: str, ep: int = 1):
 
 @app.get("/stream")
 async def stream(url: str):
-    # 1. Decode URL untuk membersihkan double encoding
-    decoded_url = unquote(unquote(url)) 
+    decoded_url = unquote(unquote(url))
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Referer": "https://www.tiktok.com/",
+        "User-Agent": "Mozilla/5.0",
+        "Referer": BASE_DOMAIN,
+        "Origin": BASE_DOMAIN,
+        "Accept": "*/*",
+        "Connection": "keep-alive",
     }
 
-    # Gunakan AsyncClient dengan timeout yang masuk akal
-    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
-    
-    try:
-        # Cek status link ke TikTok
-        response = await client.get(decoded_url, headers=headers)
-        
-        if response.status_code != 200:
-            await client.aclose()
-            # Jika TikTok menolak, kirim pesan JSON yang rapi
-            return JSONResponse(
-                status_code=response.status_code,
-                content={
-                    "error": f"TikTok rejected with status {response.status_code}",
-                    "message": "Alamat IP Server mungkin diblokir atau link kadaluwarsa.",
-                    "debug_url": decoded_url[:50] + "..." 
-                }
-            )
-
-        # 2. Jika OK, mulai streaming
-        async def generate_stream():
+    async def generate():
+        async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
             async with client.stream("GET", decoded_url, headers=headers) as r:
+                
+                if r.status_code != 200:
+                    yield b""
+                    return
+
                 async for chunk in r.aiter_bytes(chunk_size=1024*512):
                     yield chunk
-            await client.aclose() # Tutup setelah selesai
 
-        return StreamingResponse(
-            generate_stream(), 
-            media_type="video/mp4",
-            headers={"Access-Control-Allow-Origin": "*"}
-        )
-
-    except Exception as e:
-        await client.aclose()
-        # Jika terjadi error teknis lainnya
-        return JSONResponse(
-            status_code=500, 
-            content={"error": "Internal Server Error", "details": str(e)}
-        )
+    return StreamingResponse(
+        generate(),
+        media_type="video/mp4",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-cache",
+        }
+    )
 
 @app.get("/genres")
 def get_genres():
