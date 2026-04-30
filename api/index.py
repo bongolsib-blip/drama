@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Query
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -518,7 +519,7 @@ def video(slug: str, ep: int = 1):
 
 
 @app.get("/stream")
-async def stream(url: str):
+async def stream(request: Request, url: str):
     decoded_url = unquote(unquote(url))
 
     headers = {
@@ -526,28 +527,33 @@ async def stream(url: str):
         "Referer": BASE_DOMAIN,
         "Origin": BASE_DOMAIN,
         "Accept": "*/*",
-        "Connection": "keep-alive",
     }
 
-    async def generate():
-        async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
-            async with client.stream("GET", decoded_url, headers=headers) as r:
-                
-                if r.status_code != 200:
-                    yield b""
-                    return
+    # 🔥 ambil range dari browser
+    range_header = request.headers.get("range")
+    if range_header:
+        headers["Range"] = range_header
 
-                async for chunk in r.aiter_bytes(chunk_size=1024*512):
-                    yield chunk
+    async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
+        r = await client.get(decoded_url, headers=headers, stream=True)
 
-    return StreamingResponse(
-        generate(),
-        media_type="video/mp4",
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-cache",
+        # 🔥 ambil header penting dari source
+        response_headers = {
+            "Content-Type": r.headers.get("content-type", "video/mp4"),
+            "Accept-Ranges": "bytes",
         }
-    )
+
+        if "content-length" in r.headers:
+            response_headers["Content-Length"] = r.headers["content-length"]
+
+        if "content-range" in r.headers:
+            response_headers["Content-Range"] = r.headers["content-range"]
+
+        return StreamingResponse(
+            r.aiter_bytes(),
+            status_code=r.status_code,
+            headers=response_headers,
+        )
 
 @app.get("/genres")
 def get_genres():
