@@ -483,9 +483,37 @@ def list_all(max_page: int = 5, delay: float = 1):
 
 
 @app.get("/search")
+# Inisialisasi session di luar fungsi agar bisa dipakai berulang kali
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+})
+
 def search(q: str):
-    url = f"{BASE_DOMAIN}/search?lang=id-ID&q={q}"
-    return scrape_list(url)
+    url = f"https://narto-drama.com/search"
+    params = {'lang': 'id-ID', 'q': q}
+    
+    # 1. Request langsung dengan params (lebih bersih)
+    response = session.get(url, params=params, timeout=5)
+    
+    # 2. Gunakan parser lxml untuk kecepatan maksimal
+    soup = BeautifulSoup(response.text, 'lxml')
+    
+    # 3. Cari langsung ke kontainer dropdown hasil (sesuai HTML yang kamu berikan)
+    items = soup.find_all('a', class_='global-search-item')
+    
+    results = []
+    for item in items:
+        # Mengambil data minimal agar proses looping cepat
+        title_tag = item.find('div', class_='global-search-title')
+        if title_tag:
+            results.append({
+                'title': title_tag.get_text(strip=True),
+                'link': item.get('href'),
+                'thumb': item.find('img')['src'] if item.find('img') else None
+            })
+            
+    return results
 
 
 @app.get("/detail")
