@@ -3,3 +3,4 @@ mangum
 requests
 beautifulsoup4
 httpx
+lxml
