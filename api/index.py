@@ -300,38 +300,73 @@ def scrape_list(url):
 
 async def scrape_search_results(q: str):
     url = f"{BASE_DOMAIN}/search"
-    params = {'lang': 'id-ID', 'q': q}
+    params = {
+        'lang': 'id-ID',
+        'q': q
+    }
     
-    async with httpx.AsyncClient(headers=HEADERS, timeout=10.0) as client:
+    # Headers yang lebih lengkap menyerupai browser asli
+    DEBUG_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://narto-drama.com/",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    }
+    
+    async with httpx.AsyncClient(headers=DEBUG_HEADERS, timeout=15.0, follow_redirects=True) as client:
         try:
             resp = await client.get(url, params=params)
-            resp.raise_for_status()
             
-            # Gunakan lxml jika terinstall, jika tidak 'html.parser'
-            soup = BeautifulSoup(resp.text, "lxml")
+            # --- LOGGING UNTUK DEBUG ---
+            print(f"DEBUG: URL akses -> {resp.url}")
+            print(f"DEBUG: Status Code -> {resp.status_code}")
+            
+            html_content = resp.text
+            # Log 500 karakter pertama HTML ke console Vercel
+            print(f"DEBUG: Snippet HTML -> {html_content[:500]}") 
+
+            if resp.status_code != 200:
+                return {
+                    "error": f"Site returned {resp.status_code}",
+                    "debug_html": html_content[:1000], # Kirim sedikit HTML ke user untuk cek
+                    "items": []
+                }
+
+            soup = BeautifulSoup(html_content, "html.parser")
             items = []
 
-            # Website ini meletakkan hasil search di .global-search-item
-            for item in soup.select(".global-search-item"):
-                title_el = item.select_one(".global-search-title")
-                img_el = item.select_one(".global-search-thumb")
-                desc_el = item.select_one(".global-search-desc")
-                href = item.get("href")
+            # Mencari elemen hasil pencarian (berdasarkan HTML awal kamu)
+            # Kita coba cari semua link yang punya class 'global-search-item'
+            search_dropdown_items = soup.find_all("a", class_="global-search-item")
+            
+            # Jika tidak ketemu, cari di article card (halaman pencarian penuh)
+            if not search_dropdown_items:
+                search_dropdown_items = soup.find_all("article", class_="card")
+
+            for item in search_dropdown_items:
+                title_el = item.select_one(".global-search-title, .title, h3")
+                img_el = item.select_one(".global-search-thumb, .poster, img")
+                href = item.get("href") if item.name == "a" else item.find("a").get("href")
 
                 if title_el and href:
-                    # Bersihkan judul dari tag <mark> jika ada
-                    title = title_el.get_text(strip=True)
-                    
                     items.append({
-                        "title": title,
-                        "href": href.split("?")[0],
+                        "title": title_el.get_text(strip=True),
+                        "href": f"{BASE_DOMAIN}{href}" if href.startswith("/") else href,
                         "slug": extract_slug(href),
-                        "thumbnail": f"{BASE_DOMAIN}{img_el.get('src')}" if img_el and img_el.get('src').startswith('/') else img_el.get('src') if img_el else None,
-                        "description": desc_el.get_text(strip=True) if desc_el else "",
-                        "tags": [] # Search dropdown biasanya tidak punya tag lengkap
+                        "thumbnail": img_el.get("src") if img_el else None
                     })
             
-            return {"items": items, "has_next": False}
+            return {
+                "status_code": resp.status_code,
+                "items_found": len(items),
+                "items": items,
+                # Jika items kosong, kembalikan snippet HTML untuk diagnosa
+                "debug_snippet": html_content[:2000] if not items else "Items found!"
+            }
+
         except Exception as e:
             return {"error": str(e), "items": []}
 
