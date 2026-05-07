@@ -327,17 +327,25 @@ video_cache = {}
 VIDEO_CACHE_TTL = 60 * 5  # 5 menit
 
 
+def fix_url(url: str) -> str:
+    """Bersihkan URL — unescape slash, tambah domain jika tidak ada"""
+    if not url:
+        return url
+    url = url.replace("\\/", "/")
+    if url.startswith("/"):
+        url = BASE_DOMAIN + url
+    return url
+
+
 def get_video_src(slug: str, ep: int):
     key = f"{slug}_{ep}"
     now = time.time()
 
-    # Cek cache
     if key in video_cache:
         cached = video_cache[key]
         if now - cached["time"] < VIDEO_CACHE_TTL:
             return cached["url"]
 
-    # 🔥 Warm session — buka halaman dulu agar cookies valid
     warm_session(slug, ep)
 
     refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source?lang=id-ID&force=1"
@@ -347,11 +355,20 @@ def get_video_src(slug: str, ep: int):
             resp = session.get(refresh_url, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
-                url = data.get("play_url") or data.get("url") or data.get("src")
-                if url:
-                    url = url.replace("\\/", "/")
-                    video_cache[key] = {"url": url, "time": now}
-                    return url
+
+                # PRIORITAS 1: direct_play_url — URL CDN langsung, tidak butuh proxy
+                direct_url = data.get("direct_play_url")
+                if direct_url and direct_url.startswith("http"):
+                    video_cache[key] = {"url": direct_url, "time": now}
+                    return direct_url
+
+                # PRIORITAS 2: play_url — tambah domain jika relatif
+                play_url = data.get("play_url") or data.get("url") or data.get("src")
+                if play_url:
+                    play_url = fix_url(play_url)
+                    video_cache[key] = {"url": play_url, "time": now}
+                    return play_url
+
         except Exception as e:
             print(f"[get_video_src] attempt {attempt + 1} failed: {e}")
 
