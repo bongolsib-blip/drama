@@ -456,19 +456,53 @@ async def resolve_url(url: str):
 # STREAM — support /stream/proxy URL
 # =========================
 @app.get("/stream")
-async def stream(request: Request, url: str, slug: str = None, ep: int = None):
+async def stream(request: Request, slug: str = None, ep: int = None):
     """
     Stream video proxy.
 
     Untuk URL biasa:
-      /stream?url=https://...video.mp4
+      /stream?url=https%3A%2F%2F...video.mp4   ← URL harus di-encodeURIComponent
 
-    Untuk URL /stream/proxy (signed URL), kirim juga slug & ep agar session di-warm:
-      /stream?url=https://narto-drama.com/stream/proxy?...&slug=drama-slug&ep=1
+    Untuk URL /stream/proxy, kirim juga slug & ep:
+      /stream?url=https%3A%2F%2Fnarto-drama.com%2Fstream%2Fproxy%3F...&slug=drama-slug&ep=1
 
-    Ini memastikan cookies valid sebelum mengakses URL yang dilindungi.
+    PENTING: parameter `url` HARUS di-encodeURIComponent dari sisi frontend/client.
     """
-    decoded_url = unquote(unquote(url))
+    # =========================
+    # 🔥 Ambil raw query string untuk reconstruct URL yang benar
+    # =========================
+    raw_query = request.url.query  # full query string mentah
+
+    # Ambil nilai `url=` dari raw query string
+    # Ini lebih aman daripada FastAPI param parsing karena URL bisa mengandung & yang tidak di-encode
+    url_param = None
+    for part in raw_query.split("&"):
+        if part.startswith("url="):
+            # Ambil SEMUA sisanya setelah "url=" sebagai URL mentah
+            url_param = part[4:]
+            break
+
+    if not url_param:
+        return JSONResponse(status_code=400, content={"error": "Parameter 'url' tidak ditemukan"})
+
+    # Decode URL (handle double-encode juga)
+    decoded_url = unquote(unquote(url_param))
+
+    # =========================
+    # 🔥 Auto-fix: jika URL tidak punya domain (terpotong), tambahkan BASE_DOMAIN
+    # =========================
+    if decoded_url.startswith("/stream/proxy") or decoded_url.startswith("stream/proxy"):
+        decoded_url = BASE_DOMAIN + "/" + decoded_url.lstrip("/")
+
+    # Validasi URL
+    if not decoded_url.startswith("http"):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": f"URL tidak valid: {decoded_url[:100]}",
+                "hint": "Pastikan parameter 'url' di-encodeURIComponent terlebih dahulu. Contoh: /stream?url=https%3A%2F%2Fnarto-drama.com%2Fstream%2Fproxy%3F..."
+            }
+        )
 
     # =========================
     # 🔥 Deteksi /stream/proxy URL
