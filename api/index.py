@@ -425,6 +425,117 @@ def video(slug: str, ep: int = 1):
 
 
 # =========================
+# PLAY — redirect langsung ke stream (bisa dibuka di browser)
+# =========================
+from fastapi.responses import RedirectResponse, HTMLResponse
+from urllib.parse import quote
+
+@app.get("/play")
+async def play(slug: str, ep: int = 1):
+    """
+    Akses langsung dari browser tanpa frontend.
+    Contoh: /play?slug=drama-slug&ep=1
+    Otomatis generate URL fresh → redirect ke /stream
+    """
+    video_url = get_video_src(slug, ep)
+
+    if not video_url:
+        return JSONResponse(status_code=404, content={"error": "Video URL tidak ditemukan", "slug": slug, "ep": ep})
+
+    encoded = quote(video_url, safe="")
+    stream_url = f"/stream?url={encoded}&slug={slug}&ep={ep}"
+
+    return RedirectResponse(url=stream_url, status_code=302)
+
+
+# =========================
+# PLAYER — halaman HTML video player langsung di browser
+# =========================
+@app.get("/player")
+async def player(slug: str, ep: int = 1):
+    """
+    Halaman video player HTML — bisa dibuka langsung di browser.
+    Contoh: /player?slug=drama-slug&ep=1
+    """
+    video_url = get_video_src(slug, ep)
+
+    if not video_url:
+        return HTMLResponse(content="<h2>Video tidak ditemukan</h2>", status_code=404)
+
+    from urllib.parse import quote
+    encoded = quote(video_url, safe="")
+    stream_url = f"/stream?url={encoded}&slug={slug}&ep={ep}"
+
+    # Ambil detail drama untuk judul
+    detail_data = scrape_detail(slug)
+    title = detail_data.get("title", slug)
+    total_ep = detail_data.get("total_episode", 1)
+
+    # Generate tombol episode
+    ep_buttons = ""
+    for i in range(1, min(total_ep + 1, 51)):  # max 50 tombol
+        active = "background:#e50914;color:white;" if i == ep else ""
+        ep_buttons += f'<button onclick="changeEp({i})" style="margin:3px;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;background:#333;color:white;{active}">{i}</button>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title} - Episode {ep}</title>
+  <style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ background: #141414; color: white; font-family: Arial, sans-serif; }}
+    .header {{ padding: 16px 20px; background: #1a1a1a; border-bottom: 1px solid #333; }}
+    .header h1 {{ font-size: 18px; color: #e50914; }}
+    .header p {{ font-size: 13px; color: #aaa; margin-top: 4px; }}
+    .player-wrap {{ width: 100%; background: black; }}
+    video {{ width: 100%; max-height: 75vh; display: block; }}
+    .episodes {{ padding: 16px 20px; }}
+    .episodes h3 {{ margin-bottom: 10px; font-size: 14px; color: #aaa; }}
+    .ep-grid {{ display: flex; flex-wrap: wrap; gap: 4px; }}
+    .loading {{ text-align: center; padding: 40px; color: #aaa; }}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>{title}</h1>
+    <p>Episode {ep} dari {total_ep}</p>
+  </div>
+
+  <div class="player-wrap">
+    <video id="vid" controls autoplay preload="auto">
+      <source src="{stream_url}" type="video/mp4">
+      Browser tidak support video tag.
+    </video>
+  </div>
+
+  <div class="episodes">
+    <h3>Pilih Episode:</h3>
+    <div class="ep-grid">
+      {ep_buttons}
+    </div>
+  </div>
+
+  <script>
+    function changeEp(num) {{
+      window.location.href = "/player?slug={slug}&ep=" + num;
+    }}
+
+    // Error handler — coba reload jika gagal
+    const vid = document.getElementById("vid");
+    vid.addEventListener("error", function() {{
+      console.error("Video error, retrying...");
+      setTimeout(() => {{ vid.load(); vid.play(); }}, 2000);
+    }});
+  </script>
+</body>
+</html>"""
+
+    return HTMLResponse(content=html)
+
+
+# =========================
 # RESOLVE — debug URL proxy
 # =========================
 @app.get("/resolve")
