@@ -433,18 +433,11 @@ from urllib.parse import quote
 @app.get("/play")
 async def play(slug: str, ep: int = 1):
     """
-    Akses langsung dari browser tanpa frontend.
+    Akses langsung dari browser — redirect ke stream.
     Contoh: /play?slug=drama-slug&ep=1
-    Otomatis generate URL fresh → redirect ke /stream
     """
-    video_url = get_video_src(slug, ep)
-
-    if not video_url:
-        return JSONResponse(status_code=404, content={"error": "Video URL tidak ditemukan", "slug": slug, "ep": ep})
-
-    encoded = quote(video_url, safe="")
-    stream_url = f"/stream?url={encoded}&slug={slug}&ep={ep}"
-
+    # Langsung redirect ke /stream?slug=&ep= — tidak perlu URL manual
+    stream_url = f"/stream?slug={slug}&ep={ep}"
     return RedirectResponse(url=stream_url, status_code=302)
 
 
@@ -457,14 +450,8 @@ async def player(slug: str, ep: int = 1):
     Halaman video player HTML — bisa dibuka langsung di browser.
     Contoh: /player?slug=drama-slug&ep=1
     """
-    video_url = get_video_src(slug, ep)
-
-    if not video_url:
-        return HTMLResponse(content="<h2>Video tidak ditemukan</h2>", status_code=404)
-
-    from urllib.parse import quote
-    encoded = quote(video_url, safe="")
-    stream_url = f"/stream?url={encoded}&slug={slug}&ep={ep}"
+    # Gunakan /stream?slug=&ep= langsung — tidak perlu generate URL manual
+    stream_url = f"/stream?slug={slug}&ep={ep}"
 
     # Ambil detail drama untuk judul
     detail_data = scrape_detail(slug)
@@ -571,58 +558,75 @@ async def stream(request: Request, slug: str = None, ep: int = None):
     """
     Stream video proxy.
 
-    Untuk URL biasa:
-      /stream?url=https%3A%2F%2F...video.mp4   ← URL harus di-encodeURIComponent
+    Mode TERMUDAH — cukup kirim slug dan ep, tidak perlu URL:
+      /stream?slug=drama-slug&ep=1
 
-    Untuk URL /stream/proxy, kirim juga slug & ep:
-      /stream?url=https%3A%2F%2Fnarto-drama.com%2Fstream%2Fproxy%3F...&slug=drama-slug&ep=1
-
-    PENTING: parameter `url` HARUS di-encodeURIComponent dari sisi frontend/client.
+    Mode manual dengan URL (harus di-encodeURIComponent):
+      /stream?url=https%3A%2F%2Fnarto-drama.com%2Fstream%2Fproxy%3F...
     """
-    # =========================
-    # 🔥 Ambil raw query string untuk reconstruct URL yang benar
-    # =========================
-    raw_query = request.url.query  # full query string mentah
-
-    # Ambil nilai `url=` dari raw query string
-    # Ini lebih aman daripada FastAPI param parsing karena URL bisa mengandung & yang tidak di-encode
-    url_param = None
-    for part in raw_query.split("&"):
-        if part.startswith("url="):
-            # Ambil SEMUA sisanya setelah "url=" sebagai URL mentah
-            url_param = part[4:]
-            break
-
-    if not url_param:
-        return JSONResponse(status_code=400, content={"error": "Parameter 'url' tidak ditemukan"})
-
-    # Decode URL (handle double-encode juga)
-    decoded_url = unquote(unquote(url_param))
+    decoded_url = None
 
     # =========================
-    # 🔥 Auto-fix: jika URL tidak punya domain (terpotong), tambahkan BASE_DOMAIN
+    # 🔥 MODE 1: slug+ep tersedia dan tidak ada param `url`
+    # Ini cara paling aman — generate URL fresh dari server
     # =========================
-    if decoded_url.startswith("/stream/proxy") or decoded_url.startswith("stream/proxy"):
-        decoded_url = BASE_DOMAIN + "/" + decoded_url.lstrip("/")
+    has_url_param = "url=" in str(request.url.query)
 
-    # Validasi URL
-    if not decoded_url.startswith("http"):
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": f"URL tidak valid: {decoded_url[:100]}",
-                "hint": "Pastikan parameter 'url' di-encodeURIComponent terlebih dahulu. Contoh: /stream?url=https%3A%2F%2Fnarto-drama.com%2Fstream%2Fproxy%3F..."
-            }
-        )
+    if slug and ep and not has_url_param:
+        warm_session(slug, ep)
+        decoded_url = get_video_src(slug, ep)
+        if not decoded_url:
+            return JSONResponse(status_code=404, content={
+                "error": "Gagal generate video URL",
+                "slug": slug,
+                "ep": ep
+            })
+    else:
+        # =========================
+        # 🔥 MODE 2: ambil URL dari raw query string
+        # Gunakan find() bukan split() supaya & dalam URL tidak memotong
+        # =========================
+        raw_query = str(request.url.query)
+        url_key = "url="
+        idx = raw_query.find(url_key)
+
+        if idx == -1:
+            return JSONResponse(status_code=400, content={
+                "error": "Parameter 'url' tidak ditemukan",
+                "hint": "Gunakan /stream?slug=SLUG&ep=1 — lebih mudah dan tidak perlu encode URL"
+            })
+
+        # Ambil semua setelah `url=`
+        url_raw = raw_query[idx + len(url_key):]
+
+        # Strip parameter &slug= dan &ep= di akhir jika tidak ter-encode
+        for suffix in ["&slug=", "&ep="]:
+            pos = url_raw.rfind(suffix)
+            if pos != -1:
+                url_raw = url_raw[:pos]
+
+        # Decode (handle single dan double encode)
+        decoded_url = unquote(unquote(url_raw))
+
+        # Auto-fix domain hilang
+        if decoded_url.startswith("/stream/proxy") or decoded_url.startswith("stream/proxy"):
+            decoded_url = BASE_DOMAIN + "/" + decoded_url.lstrip("/")
+
+        # Validasi akhir
+        if not decoded_url.startswith("http"):
+            return JSONResponse(status_code=400, content={
+                "error": f"URL tidak valid: {decoded_url[:120]}",
+                "hint": "Gunakan /stream?slug=SLUG&ep=1 — tidak perlu kirim URL manual"
+            })
+
+        # Warm session jika proxy URL
+        if "/stream/proxy" in decoded_url and slug and ep:
+            warm_session(slug, ep)
 
     # =========================
     # 🔥 Deteksi /stream/proxy URL
     # =========================
     is_proxy_url = "/stream/proxy" in decoded_url
-
-    # Warm session jika proxy URL dan slug/ep tersedia
-    if is_proxy_url and slug and ep:
-        warm_session(slug, ep)
 
     cookies = dict(session.cookies)
     headers = dict(STREAM_HEADERS)
