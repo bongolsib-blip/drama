@@ -299,65 +299,59 @@ def scrape_list(url):
 # =========================
 
 async def scrape_search_results(q: str):
-    # Endpoint pencarian real-time biasanya ada di sini
     url = f"{BASE_DOMAIN}/search"
     params = {
         'q': q,
         'lang': 'id-ID'
     }
     
-    # Headers khusus agar server menganggap ini request pencarian AJAX/XHR
     SEARCH_HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "X-Requested-With": "XMLHttpRequest", # Penting: Memberitahu server ini request AJAX
+        "X-Requested-With": "XMLHttpRequest",
         "Referer": f"{BASE_DOMAIN}/",
-        "Accept": "*/*"
+        "Accept": "application/json, text/javascript, */*; q=0.01" # Minta format JSON
     }
     
     async with httpx.AsyncClient(headers=SEARCH_HEADERS, timeout=15.0) as client:
         try:
             resp = await client.get(url, params=params)
             
-            # Debugging di Vercel Log
-            print(f"Search Status: {resp.status_code}")
-            
-            # Jika hasil kosong, coba cek apakah website butuh '/' di akhir URL search
-            if resp.status_code == 404:
-                resp = await client.get(f"{BASE_DOMAIN}/search/", params=params)
-
-            html_content = resp.text
-            soup = BeautifulSoup(html_content, "html.parser")
-            items = []
-
-            # Website ini biasanya merespons dengan elemen 'global-search-item'
-            # Kita cari semua elemen <a> yang memiliki class tersebut
-            search_elements = soup.find_all("a", class_="global-search-item")
-
-            for item in search_elements:
-                title_div = item.find("div", class_="global-search-title")
-                img_tag = item.find("img", class_="global-search-thumb")
-                desc_div = item.find("div", class_="global-search-desc")
-                
-                if title_div:
-                    # Ambil text dan bersihkan tag <mark> (highlight pencarian)
-                    title = title_div.get_text(strip=True)
-                    href = item.get("href", "")
+            # Jika respon adalah JSON (sesuai log kamu)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json() # Mengubah string JSON menjadi Dictionary Python
                     
-                    items.append({
-                        "title": title,
-                        "href": f"{BASE_DOMAIN}{href}" if href.startswith("/") else href,
-                        "slug": extract_slug(href),
-                        "thumbnail": img_tag.get("src") if img_tag else None,
-                        "desc": desc_div.get_text(strip=True) if desc_div else ""
-                    })
+                    raw_items = data.get("items", [])
+                    results = []
+                    
+                    for item in raw_items:
+                        # Ambil URL asli
+                        original_url = item.get("url", "")
+                        
+                        # Ambil poster dan pastikan URL-nya lengkap
+                        poster = item.get("poster_url", "")
+                        if poster and poster.startswith("/"):
+                            poster = f"{BASE_DOMAIN}{poster}"
 
-            return {
-                "query": q,
-                "count": len(items),
-                "items": items,
-                # Log snippet untuk memastikan jika masih kosong
-                "log": html_content[:500] if not items else "Success"
-            }
+                        results.append({
+                            "title": item.get("title", ""),
+                            "href": original_url,
+                            "slug": extract_slug(original_url),
+                            "thumbnail": poster,
+                            "description": item.get("description", ""),
+                            "tags": item.get("tags", [])
+                        })
+                    
+                    return {
+                        "status": "success",
+                        "count": len(results),
+                        "items": results
+                    }
+                except Exception as json_err:
+                    # Jika gagal parsing JSON, berarti formatnya berubah kembali ke HTML
+                    return {"error": "Format JSON tidak valid", "raw": resp.text[:500]}
+            
+            return {"error": f"Server status {resp.status_code}", "items": []}
 
         except Exception as e:
             return {"error": str(e), "items": []}
