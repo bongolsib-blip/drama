@@ -308,7 +308,7 @@ async def scrape_search_results(q: str):
             resp.raise_for_status()
             
             # Gunakan lxml jika terinstall, jika tidak 'html.parser'
-            soup = BeautifulSoup(resp.text, "html.parser")
+            soup = BeautifulSoup(resp.text, "lxml")
             items = []
 
             # Website ini meletakkan hasil search di .global-search-item
