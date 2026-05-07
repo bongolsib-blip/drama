@@ -294,6 +294,47 @@ def scrape_list(url):
     except Exception as e:
         return {"error": str(e)}
 
+# =========================
+# scrape_search_resu 🔥
+# =========================
+
+async def scrape_search_results(q: str):
+    url = f"{BASE_DOMAIN}/search"
+    params = {'lang': 'id-ID', 'q': q}
+    
+    async with httpx.AsyncClient(headers=HEADERS, timeout=10.0) as client:
+        try:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            
+            # Gunakan lxml jika terinstall, jika tidak 'html.parser'
+            soup = BeautifulSoup(resp.text, "html.parser")
+            items = []
+
+            # Website ini meletakkan hasil search di .global-search-item
+            for item in soup.select(".global-search-item"):
+                title_el = item.select_one(".global-search-title")
+                img_el = item.select_one(".global-search-thumb")
+                desc_el = item.select_one(".global-search-desc")
+                href = item.get("href")
+
+                if title_el and href:
+                    # Bersihkan judul dari tag <mark> jika ada
+                    title = title_el.get_text(strip=True)
+                    
+                    items.append({
+                        "title": title,
+                        "href": href.split("?")[0],
+                        "slug": extract_slug(href),
+                        "thumbnail": f"{BASE_DOMAIN}{img_el.get('src')}" if img_el and img_el.get('src').startswith('/') else img_el.get('src') if img_el else None,
+                        "description": desc_el.get_text(strip=True) if desc_el else "",
+                        "tags": [] # Search dropdown biasanya tidak punya tag lengkap
+                    })
+            
+            return {"items": items, "has_next": False}
+        except Exception as e:
+            return {"error": str(e), "items": []}
+
 
 # =========================
 # DETAIL ENDPOINT 🔥
@@ -483,37 +524,9 @@ def list_all(max_page: int = 5, delay: float = 1):
 
 
 @app.get("/search")
-# Inisialisasi session di luar fungsi agar bisa dipakai berulang kali
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-})
-
-def search(q: str):
-    url = f"https://narto-drama.com/search"
-    params = {'lang': 'id-ID', 'q': q}
-    
-    # 1. Request langsung dengan params (lebih bersih)
-    response = session.get(url, params=params, timeout=5)
-    
-    # 2. Gunakan parser lxml untuk kecepatan maksimal
-    soup = BeautifulSoup(response.text, 'lxml')
-    
-    # 3. Cari langsung ke kontainer dropdown hasil (sesuai HTML yang kamu berikan)
-    items = soup.find_all('a', class_='global-search-item')
-    
-    results = []
-    for item in items:
-        # Mengambil data minimal agar proses looping cepat
-        title_tag = item.find('div', class_='global-search-title')
-        if title_tag:
-            results.append({
-                'title': title_tag.get_text(strip=True),
-                'link': item.get('href'),
-                'thumb': item.find('img')['src'] if item.find('img') else None
-            })
-            
-    return results
+async def search(q: str):
+    # Jangan gunakan scrape_list(url) karena strukturnya beda
+    return await scrape_search_results(q)
 
 
 @app.get("/detail")
