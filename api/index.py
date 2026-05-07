@@ -299,72 +299,64 @@ def scrape_list(url):
 # =========================
 
 async def scrape_search_results(q: str):
+    # Endpoint pencarian real-time biasanya ada di sini
     url = f"{BASE_DOMAIN}/search"
     params = {
-        'lang': 'id-ID',
-        'q': q
+        'q': q,
+        'lang': 'id-ID'
     }
     
-    # Headers yang lebih lengkap menyerupai browser asli
-    DEBUG_HEADERS = {
+    # Headers khusus agar server menganggap ini request pencarian AJAX/XHR
+    SEARCH_HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://narto-drama.com/",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+        "X-Requested-With": "XMLHttpRequest", # Penting: Memberitahu server ini request AJAX
+        "Referer": f"{BASE_DOMAIN}/",
+        "Accept": "*/*"
     }
     
-    async with httpx.AsyncClient(headers=DEBUG_HEADERS, timeout=15.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(headers=SEARCH_HEADERS, timeout=15.0) as client:
         try:
             resp = await client.get(url, params=params)
             
-            # --- LOGGING UNTUK DEBUG ---
-            print(f"DEBUG: URL akses -> {resp.url}")
-            print(f"DEBUG: Status Code -> {resp.status_code}")
+            # Debugging di Vercel Log
+            print(f"Search Status: {resp.status_code}")
             
+            # Jika hasil kosong, coba cek apakah website butuh '/' di akhir URL search
+            if resp.status_code == 404:
+                resp = await client.get(f"{BASE_DOMAIN}/search/", params=params)
+
             html_content = resp.text
-            # Log 500 karakter pertama HTML ke console Vercel
-            print(f"DEBUG: Snippet HTML -> {html_content[:500]}") 
-
-            if resp.status_code != 200:
-                return {
-                    "error": f"Site returned {resp.status_code}",
-                    "debug_html": html_content[:1000], # Kirim sedikit HTML ke user untuk cek
-                    "items": []
-                }
-
             soup = BeautifulSoup(html_content, "html.parser")
             items = []
 
-            # Mencari elemen hasil pencarian (berdasarkan HTML awal kamu)
-            # Kita coba cari semua link yang punya class 'global-search-item'
-            search_dropdown_items = soup.find_all("a", class_="global-search-item")
-            
-            # Jika tidak ketemu, cari di article card (halaman pencarian penuh)
-            if not search_dropdown_items:
-                search_dropdown_items = soup.find_all("article", class_="card")
+            # Website ini biasanya merespons dengan elemen 'global-search-item'
+            # Kita cari semua elemen <a> yang memiliki class tersebut
+            search_elements = soup.find_all("a", class_="global-search-item")
 
-            for item in search_dropdown_items:
-                title_el = item.select_one(".global-search-title, .title, h3")
-                img_el = item.select_one(".global-search-thumb, .poster, img")
-                href = item.get("href") if item.name == "a" else item.find("a").get("href")
-
-                if title_el and href:
+            for item in search_elements:
+                title_div = item.find("div", class_="global-search-title")
+                img_tag = item.find("img", class_="global-search-thumb")
+                desc_div = item.find("div", class_="global-search-desc")
+                
+                if title_div:
+                    # Ambil text dan bersihkan tag <mark> (highlight pencarian)
+                    title = title_div.get_text(strip=True)
+                    href = item.get("href", "")
+                    
                     items.append({
-                        "title": title_el.get_text(strip=True),
+                        "title": title,
                         "href": f"{BASE_DOMAIN}{href}" if href.startswith("/") else href,
                         "slug": extract_slug(href),
-                        "thumbnail": img_el.get("src") if img_el else None
+                        "thumbnail": img_tag.get("src") if img_tag else None,
+                        "desc": desc_div.get_text(strip=True) if desc_div else ""
                     })
-            
+
             return {
-                "status_code": resp.status_code,
-                "items_found": len(items),
+                "query": q,
+                "count": len(items),
                 "items": items,
-                # Jika items kosong, kembalikan snippet HTML untuk diagnosa
-                "debug_snippet": html_content[:2000] if not items else "Items found!"
+                # Log snippet untuk memastikan jika masih kosong
+                "log": html_content[:500] if not items else "Success"
             }
 
         except Exception as e:
