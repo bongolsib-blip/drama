@@ -551,111 +551,150 @@ async def resolve_url(url: str):
 
 
 # =========================
+# DEBUG — cek status video URL
+# =========================
+@app.get("/debug")
+async def debug(slug: str, ep: int = 1):
+    """
+    Debug endpoint — tampilkan semua info tentang video URL.
+    Contoh: /debug?slug=drama-slug&ep=1
+    """
+    result = {"slug": slug, "ep": ep}
+
+    # Step 1: warm session
+    try:
+        warm_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}?lang=id-ID"
+        r = session.get(warm_url, timeout=10)
+        result["warm_status"] = r.status_code
+        result["cookies"] = list(session.cookies.keys())
+    except Exception as e:
+        result["warm_error"] = str(e)
+
+    # Step 2: refresh-source
+    try:
+        refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source?lang=id-ID&force=1"
+        r2 = session.get(refresh_url, timeout=10)
+        result["refresh_status"] = r2.status_code
+        result["refresh_raw"] = r2.text[:500]
+        if r2.status_code == 200:
+            try:
+                result["refresh_json"] = r2.json()
+            except:
+                result["refresh_json"] = "bukan JSON"
+    except Exception as e:
+        result["refresh_error"] = str(e)
+
+    # Step 3: test akses video URL
+    video_url = get_video_src(slug, ep)
+    result["video_url"] = video_url
+
+    if video_url:
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+                head = await client.head(video_url, headers=STREAM_HEADERS)
+                result["video_status"] = head.status_code
+                result["video_content_type"] = head.headers.get("content-type")
+                result["video_final_url"] = str(head.url)
+        except Exception as e:
+            result["video_head_error"] = str(e)
+
+    return result
+
+
+# =========================
 # STREAM — support /stream/proxy URL
 # =========================
 @app.get("/stream")
 async def stream(request: Request, slug: str = None, ep: int = None):
     """
     Stream video proxy.
-
-    Mode TERMUDAH — cukup kirim slug dan ep, tidak perlu URL:
-      /stream?slug=drama-slug&ep=1
-
-    Mode manual dengan URL (harus di-encodeURIComponent):
-      /stream?url=https%3A%2F%2Fnarto-drama.com%2Fstream%2Fproxy%3F...
+    Cara termudah: /stream?slug=drama-slug&ep=1
     """
     decoded_url = None
+    error_detail = {}
 
     # =========================
-    # 🔥 MODE 1: slug+ep tersedia dan tidak ada param `url`
-    # Ini cara paling aman — generate URL fresh dari server
+    # MODE 1: slug+ep → generate URL fresh (DIREKOMENDASIKAN)
     # =========================
     has_url_param = "url=" in str(request.url.query)
 
     if slug and ep and not has_url_param:
-        warm_session(slug, ep)
-        decoded_url = get_video_src(slug, ep)
+        try:
+            warm_session(slug, ep)
+            decoded_url = get_video_src(slug, ep)
+        except Exception as e:
+            return JSONResponse(status_code=500, content={
+                "error": f"Gagal get_video_src: {str(e)}",
+                "slug": slug,
+                "ep": ep,
+                "hint": "Cek /debug?slug={slug}&ep={ep} untuk detail"
+            })
+
         if not decoded_url:
             return JSONResponse(status_code=404, content={
-                "error": "Gagal generate video URL",
+                "error": "Video URL kosong — refresh-source tidak mengembalikan URL",
                 "slug": slug,
-                "ep": ep
+                "ep": ep,
+                "hint": f"Cek /debug?slug={slug}&ep={ep} untuk detail lengkap"
             })
+
     else:
         # =========================
-        # 🔥 MODE 2: ambil URL dari raw query string
-        # Gunakan find() bukan split() supaya & dalam URL tidak memotong
+        # MODE 2: URL eksplisit dari query string
         # =========================
         raw_query = str(request.url.query)
-        url_key = "url="
-        idx = raw_query.find(url_key)
+        idx = raw_query.find("url=")
 
         if idx == -1:
             return JSONResponse(status_code=400, content={
                 "error": "Parameter 'url' tidak ditemukan",
-                "hint": "Gunakan /stream?slug=SLUG&ep=1 — lebih mudah dan tidak perlu encode URL"
+                "hint": "Gunakan /stream?slug=SLUG&ep=1"
             })
 
-        # Ambil semua setelah `url=`
-        url_raw = raw_query[idx + len(url_key):]
+        url_raw = raw_query[idx + 4:]
 
-        # Strip parameter &slug= dan &ep= di akhir jika tidak ter-encode
         for suffix in ["&slug=", "&ep="]:
             pos = url_raw.rfind(suffix)
             if pos != -1:
                 url_raw = url_raw[:pos]
 
-        # Decode (handle single dan double encode)
         decoded_url = unquote(unquote(url_raw))
 
-        # Auto-fix domain hilang
         if decoded_url.startswith("/stream/proxy") or decoded_url.startswith("stream/proxy"):
             decoded_url = BASE_DOMAIN + "/" + decoded_url.lstrip("/")
 
-        # Validasi akhir
         if not decoded_url.startswith("http"):
             return JSONResponse(status_code=400, content={
                 "error": f"URL tidak valid: {decoded_url[:120]}",
-                "hint": "Gunakan /stream?slug=SLUG&ep=1 — tidak perlu kirim URL manual"
+                "hint": "Gunakan /stream?slug=SLUG&ep=1"
             })
 
-        # Warm session jika proxy URL
         if "/stream/proxy" in decoded_url and slug and ep:
             warm_session(slug, ep)
 
     # =========================
-    # 🔥 Deteksi /stream/proxy URL
+    # STREAM VIDEO
     # =========================
     is_proxy_url = "/stream/proxy" in decoded_url
-
     cookies = dict(session.cookies)
     headers = dict(STREAM_HEADERS)
 
-    # Teruskan Range header jika ada (untuk seek video)
     range_header = request.headers.get("range")
     if range_header:
         headers["Range"] = range_header
 
-    # =========================
-    # 🔥 Untuk /stream/proxy: ikuti redirect manual dulu
-    # =========================
+    # Ikuti redirect manual untuk proxy URL
     if is_proxy_url:
         try:
             async with httpx.AsyncClient(follow_redirects=False, timeout=15) as check:
                 head_resp = await check.head(decoded_url, headers=headers, cookies=cookies)
-
-                # Jika server redirect → pakai URL tujuan redirect
                 if head_resp.status_code in (301, 302, 307, 308):
                     location = head_resp.headers.get("location")
                     if location:
                         decoded_url = location
-                        print(f"[stream] Redirected to: {decoded_url}")
         except Exception as e:
-            print(f"[stream] HEAD check failed: {e}")
+            pass  # lanjut dengan URL asli
 
-    # =========================
-    # STREAM VIDEO
-    # =========================
     try:
         async with httpx.AsyncClient(
             follow_redirects=True,
@@ -664,55 +703,46 @@ async def stream(request: Request, slug: str = None, ep: int = None):
         ) as client:
             async with client.stream("GET", decoded_url, headers=headers) as r:
 
-                # 🔥 Jika masih 403/404 → coba auto-refresh URL via slug & ep
                 if r.status_code in (403, 404, 401):
-                    # Jika ada slug & ep, generate URL baru otomatis
+                    # Coba refresh URL jika ada slug+ep
                     if slug and ep:
                         new_url = get_video_src(slug, int(ep))
                         if new_url and new_url != decoded_url:
-                            # Retry dengan URL baru
                             async with client.stream("GET", new_url, headers=headers) as r2:
-                                if r2.status_code == 200 or r2.status_code == 206:
-                                    response_headers = {
+                                if r2.status_code in (200, 206):
+                                    resp_h = {
                                         "Content-Type": r2.headers.get("content-type", "video/mp4"),
                                         "Accept-Ranges": "bytes",
                                         "Access-Control-Allow-Origin": "*",
                                         "Cache-Control": "no-cache",
                                     }
                                     if "content-length" in r2.headers:
-                                        response_headers["Content-Length"] = r2.headers["content-length"]
+                                        resp_h["Content-Length"] = r2.headers["content-length"]
                                     if "content-range" in r2.headers:
-                                        response_headers["Content-Range"] = r2.headers["content-range"]
-
+                                        resp_h["Content-Range"] = r2.headers["content-range"]
                                     return StreamingResponse(
                                         r2.aiter_bytes(chunk_size=1024 * 512),
                                         status_code=r2.status_code,
-                                        headers=response_headers,
+                                        headers=resp_h,
                                     )
 
-                    # Tidak bisa di-recover
                     return JSONResponse(
                         status_code=r.status_code,
                         content={
                             "error": f"Stream server returned {r.status_code}",
-                            "url": decoded_url,
-                            "hint": "URL expired atau IP tidak dikenali. Kirim parameter slug & ep untuk auto-refresh. Contoh: /stream?url=...&slug=drama-slug&ep=1"
+                            "video_url": decoded_url[:100] + "...",
+                            "hint": f"Cek /debug?slug={slug}&ep={ep}"
                         }
                     )
 
-                # =========================
-                # Susun response headers
-                # =========================
                 response_headers = {
                     "Content-Type": r.headers.get("content-type", "video/mp4"),
                     "Accept-Ranges": "bytes",
                     "Access-Control-Allow-Origin": "*",
                     "Cache-Control": "no-cache",
                 }
-
                 if "content-length" in r.headers:
                     response_headers["Content-Length"] = r.headers["content-length"]
-
                 if "content-range" in r.headers:
                     response_headers["Content-Range"] = r.headers["content-range"]
 
@@ -723,10 +753,13 @@ async def stream(request: Request, slug: str = None, ep: int = None):
                 )
 
     except httpx.TimeoutException:
-        return JSONResponse(status_code=504, content={"error": "Stream timeout — server tidak merespon"})
+        return JSONResponse(status_code=504, content={"error": "Stream timeout"})
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
+        return JSONResponse(status_code=500, content={
+            "error": str(e),
+            "video_url": decoded_url[:100] if decoded_url else None,
+            "hint": f"Cek /debug?slug={slug}&ep={ep} untuk detail"
+        })
 
 # =========================
 # GENRES
