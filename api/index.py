@@ -441,7 +441,7 @@ def scrape_detail(slug: str):
     # ==========================================
     if slug.startswith("import?"):
         query_part = slug.replace("import?", "")
-        url = f"{BASE_DOMAIN}/search/import?{query_part}"
+        url = f"{BASE_DOMAIN}{slug}"
     else:
         url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
 
