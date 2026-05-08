@@ -441,57 +441,38 @@ def scrape_detail(slug: str):
         # PENENTUAN URL (IMPORT VS LOKAL)
         # =========================
         if slug.startswith("import?"):
-            # Jika slug adalah link import (hasil dari scrape_full_search)
             query_part = slug.replace("import?", "")
             url = f"{BASE_DOMAIN}/search/import?{query_part}"
         else:
-            # Jika slug adalah link detail biasa
             url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
         
-        # Menggunakan session agar redirect diikuti secara otomatis
-        # Timeout dinaikkan ke 15 karena proses import butuh waktu lebih lama
         resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
         resp.raise_for_status()
 
-        # Update slug asli jika terjadi redirect (opsional, untuk konsistensi)
-        final_url = resp.url
-        
+        # 🔥 FIX: Ambil final_slug dari URL setelah redirect
+        final_url = str(resp.url)  # pastikan string
+        final_slug = extract_slug(final_url.split("?")[0])  # buang query params dulu
+
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # =========================
-        # TITLE (FIXED)
-        # =========================
         title_tag = soup.find("h1", class_="movie-title")
         title = title_tag.get_text(strip=True) if title_tag else ""
 
-        # =========================
-        # EPISODE INFO (FIXED)
-        # =========================
         sub_tag = soup.find("p", class_="movie-sub")
         episode_text = sub_tag.get_text(" ", strip=True) if sub_tag else ""
 
-        # extract angka episode
         total_episode = 0
         match = re.search(r"(\d+)\s*Episode", episode_text)
         if match:
             total_episode = int(match.group(1))
 
-        # =========================
-        # DESCRIPTION (FIXED)
-        # =========================
         desc_tag = soup.find("div", class_="movie-desc")
         description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-        # =========================
-        # TAGS (FIXED)
-        # =========================
         tags = []
         for tag in soup.find_all("a", class_="movie-tag-pill"):
             tags.append(tag.get_text(strip=True))
 
-        # =========================
-        # THUMBNAIL (fallback aman)
-        # =========================
         img_tag = soup.find("img", class_="poster")
         if not img_tag:
             img_tag = soup.find("img")
@@ -507,7 +488,9 @@ def scrape_detail(slug: str):
             "tags": tags,
             "total_episode": total_episode,
             "episode_raw": episode_text,
-            "final_slug": extract_slug(final_url) # Memberitahu slug asli setelah diimport
+            "original_slug": slug,           # 🔥 slug yang diminta (mungkin import?)
+            "final_slug": final_slug,         # 🔥 slug asli setelah redirect
+            "was_imported": slug.startswith("import?")  # 🔥 flag untuk client
         }
 
     except Exception as e:
@@ -646,9 +629,14 @@ async def search_full(q: str, page: int = 1):
 
 @app.get("/detail")
 def detail(slug: str):
+    data = scrape_detail(slug)
+    
+    # 🔥 Kalau slug import, return final_slug agar client tahu slug yang harus dipakai
     return {
         "slug": slug,
-        "data": scrape_detail(slug)
+        "final_slug": data.get("final_slug", slug),  # slug yang harus dipakai untuk /video
+        "was_imported": data.get("was_imported", False),
+        "data": data
     }
 
 
@@ -739,7 +727,7 @@ def get_by_genre(genre: str, page: int = 1, limit: int = 20):
         "total": len(data),
         "page": page,
         "data": {
-            "items": result[start:end]
+            "items": data[start:end]  # 🔥 FIX: was `result[start:end]` (NameError)
         }
     }
 
