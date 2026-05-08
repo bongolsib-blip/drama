@@ -13,6 +13,7 @@ from urllib.parse import unquote
 from urllib.parse import urlparse, parse_qs, urlencode, unquote
 import time
 import httpx
+import asyncio
 
 app = FastAPI()
 app.add_middleware(
@@ -619,36 +620,215 @@ async def search(q: str):
 async def search_full(q: str, page: int = 1):
     return await scrape_full_search(q, page)
 
+@app.get("/resolve-import")
+async def resolve_import(slug: str = Query(...)):
+    """
+    Khusus untuk slug yang mengandung 'import?...'
+    Akan polling sampai import selesai dan return final_slug
+    """
+    # Decode jika perlu
+    decoded_slug = unquote(slug)
+    
+    if not decoded_slug.startswith("import?"):
+        return {"error": "Bukan import slug", "final_slug": decoded_slug}
+    
+    query_part = decoded_slug[len("import?"):]
+    import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
+    
+    final_slug = None
+    max_attempts = 10
+    
+    for attempt in range(max_attempts):
+        try:
+            resp = requests.get(import_url, headers=HEADERS, timeout=15, allow_redirects=True)
+            final_url = str(resp.url)
+            
+            print(f"[resolve-import] Attempt {attempt+1}: {final_url}")
+            
+            # Cek apakah sudah redirect ke detail page
+            if "/detail/watch/" in final_url:
+                final_slug = extract_slug(final_url.split("?")[0])
+                break
+            
+            # Cek apakah ada meta redirect atau js redirect di HTML
+            soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # Cek meta refresh
+            meta_refresh = soup.find("meta", attrs={"http-equiv": "refresh"})
+            if meta_refresh:
+                content = meta_refresh.get("content", "")
+                url_match = re.search(r'url=(.+)', content, re.IGNORECASE)
+                if url_match:
+                    redirect_url = url_match.group(1).strip()
+                    if not redirect_url.startswith("http"):
+                        redirect_url = BASE_DOMAIN + redirect_url
+                    final_slug = extract_slug(redirect_url.split("?")[0])
+                    break
+            
+            # Cek apakah ada link ke detail di dalam halaman
+            detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
+            if detail_link:
+                href = detail_link.get("href", "")
+                final_slug = extract_slug(href.split("?")[0])
+                break
+            
+            # Cek window.location atau JS redirect
+            scripts = soup.find_all("script")
+            for script in scripts:
+                text = script.get_text()
+                loc_match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
+                if loc_match:
+                    redirect_url = loc_match.group(1)
+                    if "/detail/watch/" in redirect_url:
+                        final_slug = extract_slug(redirect_url.split("?")[0])
+                        break
+            
+            if final_slug:
+                break
+                
+            # Belum selesai, tunggu sebentar
+            print(f"[resolve-import] Import belum selesai, retry {attempt+1}/{max_attempts}...")
+            time.sleep(2)
+            
+        except Exception as e:
+            print(f"[resolve-import] Error attempt {attempt+1}: {e}")
+            time.sleep(2)
+    
+    if not final_slug:
+        return {
+            "status": "failed",
+            "message": "Import tidak selesai setelah beberapa percobaan",
+            "final_slug": None
+        }
+    
+    return {
+        "status": "success",
+        "final_slug": final_slug,
+        "import_url": import_url
+    }
 
 @app.get("/detail")
 async def detail(request: Request):
-    # 🔥 Ambil RAW query string agar tidak terpotong
-    raw_query = str(request.url.query)  # "slug=import?provider=...&book_id=...&title=..."
+    raw_query = str(request.url.query)
     
-    # Pisahkan slug= dari awal
     if raw_query.startswith("slug="):
-        full_slug = raw_query[len("slug="):]  # ambil semua setelah "slug="
-        full_slug = unquote(full_slug)         # decode URL encoding
+        full_slug = unquote(raw_query[len("slug="):])
     else:
-        # fallback biasa
         full_slug = request.query_params.get("slug", "")
-
+    
+    # 🔥 Jika import slug, resolve dulu
+    if full_slug.startswith("import?") or full_slug == "import":
+        resolve_result = await resolve_import_internal(full_slug)
+        
+        if not resolve_result.get("final_slug"):
+            return {
+                "slug": full_slug,
+                "final_slug": None,
+                "was_imported": True,
+                "import_status": "failed",
+                "data": {"error": "Gagal import drama"}
+            }
+        
+        final_slug = resolve_result["final_slug"]
+        data = scrape_detail(final_slug)  # scrape dengan slug yang sudah bener
+        
+        return {
+            "slug": full_slug,
+            "final_slug": final_slug,
+            "was_imported": True,
+            "import_status": "success",
+            "data": data
+        }
+    
+    # Slug biasa
     data = scrape_detail(full_slug)
-
     return {
         "slug": full_slug,
         "final_slug": data.get("final_slug", full_slug),
-        "was_imported": data.get("was_imported", False),
+        "was_imported": False,
+        "import_status": "not_needed",
         "data": data
     }
 
+# Helper internal (tidak expose sebagai endpoint)
+async def resolve_import_internal(slug: str):
+    decoded_slug = unquote(slug)
+    
+    if not decoded_slug.startswith("import?"):
+        return {"final_slug": decoded_slug}
+    
+    query_part = decoded_slug[len("import?"):]
+    import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
+    
+    for attempt in range(10):
+        try:
+            resp = requests.get(import_url, headers=HEADERS, timeout=15, allow_redirects=True)
+            final_url = str(resp.url)
+            
+            if "/detail/watch/" in final_url:
+                return {"final_slug": extract_slug(final_url.split("?")[0])}
+            
+            soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # Cek semua kemungkinan redirect
+            for script in soup.find_all("script"):
+                text = script.get_text()
+                match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
+                if match and "/detail/watch/" in match.group(1):
+                    return {"final_slug": extract_slug(match.group(1).split("?")[0])}
+            
+            detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
+            if detail_link:
+                return {"final_slug": extract_slug(detail_link["href"].split("?")[0])}
+            
+            time.sleep(2)
+        except Exception as e:
+            time.sleep(2)
+    
+    return {"final_slug": None}
 
-@app.get("/episodes")
-def episodes(slug: str):
+@app.get("/video")
+async def video(request: Request, ep: int = 1):
+    raw_query = str(request.url.query)
+    slug_part = ""
+    
+    for param in raw_query.split("&"):
+        if param.startswith("slug="):
+            slug_part = unquote(param[len("slug="):])
+            break
+    
+    # 🔥 Auto-resolve jika masih import slug
+    if slug_part.startswith("import?") or slug_part == "import":
+        resolve = await resolve_import_internal(slug_part)
+        if not resolve.get("final_slug"):
+            return {"error": "Gagal resolve import slug", "video_url": None}
+        slug_part = resolve["final_slug"]
+    
     return {
-        "slug": slug,
-        "total_episode": get_total_episodes(slug)
+        "slug": slug_part,
+        "episode": ep,
+        "video_url": get_video_src(slug_part, ep)
     }
+
+@app.get("/episodes")  
+async def episodes(request: Request):
+    raw_query = str(request.url.query)
+    slug_part = ""
+    
+    for param in raw_query.split("&"):
+        if param.startswith("slug="):
+            slug_part = unquote(param[len("slug="):])
+            break
+    
+    # 🔥 Auto-resolve jika masih import slug
+    if slug_part.startswith("import?") or slug_part == "import":
+        resolve = await resolve_import_internal(slug_part)
+        if not resolve.get("final_slug"):
+            return {"error": "Gagal resolve import slug", "total_episode": 0}
+        slug_part = resolve["final_slug"]
+    
+    return {
+        "slug": slug_part,
 
 
 @app.get("/videos")
@@ -658,14 +838,6 @@ def videos(slug: str):
         "data": get_all_video_links(slug)
     }
 
-
-@app.get("/video")
-def video(slug: str, ep: int = 1):
-    return {
-        "slug": slug,
-        "episode": ep,
-        "video_url": get_video_src(slug, ep)
-    }
 
 
 
