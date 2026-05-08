@@ -10,6 +10,7 @@ import re
 import json
 from urllib.parse import urlparse
 from urllib.parse import unquote
+from urllib.parse import urlparse, parse_qs, urlencode, unquote
 import time
 import httpx
 
@@ -359,23 +360,16 @@ async def scrape_search_results(q: str):
 # scrape_search_full 🔥
 # =========================
 async def scrape_full_search(q: str, page: int = 1):
-    # Endpoint halaman pencarian penuh
     url = f"{BASE_DOMAIN}/search"
-    params = {
-        'q': q,
-        'lang': 'id-ID',
-        'page': page
-    }
+    params = {'q': q, 'lang': 'id-ID', 'page': page}
     
-    # Gunakan header browser biasa (JANGAN pakai X-Requested-With)
-    # Agar server mengirimkan HTML penuh, bukan JSON dropdown
-    FULL_HEADERS = {
+    headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Referer": f"{BASE_DOMAIN}/"
     }
     
-    async with httpx.AsyncClient(headers=FULL_HEADERS, timeout=15.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(headers=headers, timeout=15.0, follow_redirects=True) as client:
         try:
             resp = await client.get(url, params=params)
             if resp.status_code != 200:
@@ -384,46 +378,49 @@ async def scrape_full_search(q: str, page: int = 1):
             soup = BeautifulSoup(resp.text, "html.parser")
             items = []
 
-            # Mencari elemen kartu drama di halaman grid
-            # Berdasarkan struktur umum narto-drama: article.card
-            cards = soup.find_all("article", class_="card")
-            
-            for card in cards:
+            for card in soup.find_all("article", class_="card"):
                 title_tag = card.find("h3", class_="title")
                 link_tag = card.find("a", class_="card-link-overlay")
                 img_tag = card.find("img", class_="poster")
                 
-                # Mengambil Tags (biasanya ada di halaman grid)
-                tags = [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
-                
-                # Mengambil Info Episode (jika ada, misal: "Full" atau "Ep 100")
-                ep_status = card.find("div", class_="card-ep")
-                status_text = ep_status.get_text(strip=True) if ep_status else ""
-
                 if title_tag and link_tag:
-                    href = link_tag.get("href", "")
-                    full_url = f"{BASE_DOMAIN}{href}" if href.startswith("/") else href
+                    raw_href = link_tag.get("href", "")
+                    title = title_tag.get_text(strip=True)
                     
+                    # LOGIKA HANDING LINK IMPORT VS LOCAL
+                    if "/search/import" in raw_href:
+                        # Link import: simpan seluruh query sebagai slug
+                        parsed = urlparse(raw_href)
+                        slug = f"import?{parsed.query}" # Contoh: import?provider=...&book_id=...
+                        item_type = "import"
+                        full_url = f"{BASE_DOMAIN}{raw_href}" if raw_href.startswith("/") else raw_href
+                    else:
+                        # Link Lokal: ambil slug ujungnya saja
+                        clean_href = raw_href.split("?")[0]
+                        slug = extract_slug(clean_href)
+                        item_type = "local"
+                        full_url = f"{BASE_DOMAIN}{clean_href}" if clean_href.startswith("/") else clean_href
+
+                    # THUMBNAIL
                     thumb = img_tag.get("src") if img_tag else None
                     if thumb and thumb.startswith("/"):
                         thumb = f"{BASE_DOMAIN}{thumb}"
 
                     items.append({
-                        "title": title_tag.get_text(strip=True),
-                        "href": full_url.split("?")[0],
-                        "slug": extract_slug(full_url),
+                        "title": title,
+                        "href": full_url,
+                        "slug": slug,
+                        "type": item_type,
                         "thumbnail": thumb,
-                        "status": status_text,
-                        "tags": tags
+                        "status": card.find("div", class_="card-ep").get_text(strip=True) if card.find("div", class_="card-ep") else "",
+                        "tags": [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
                     })
 
-            # Cek Navigasi Halaman Selanjutnya (Pagination)
             has_next = False
             pager = soup.find("div", class_="pager")
             if pager:
                 next_btn = pager.find("a", class_="pager-link", string=lambda x: x and "Next" in x)
-                if next_btn:
-                    has_next = True
+                has_next = True if next_btn else False
 
             return {
                 "query": q,
@@ -432,7 +429,6 @@ async def scrape_full_search(q: str, page: int = 1):
                 "count": len(items),
                 "items": items
             }
-
         except Exception as e:
             return {"error": str(e), "items": []}
 # =========================
@@ -441,10 +437,25 @@ async def scrape_full_search(q: str, page: int = 1):
 
 def scrape_detail(slug: str):
     try:
-        url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        # =========================
+        # PENENTUAN URL (IMPORT VS LOKAL)
+        # =========================
+        if slug.startswith("import?"):
+            # Jika slug adalah link import (hasil dari scrape_full_search)
+            query_part = slug.replace("import?", "")
+            url = f"{BASE_DOMAIN}/search/import?{query_part}"
+        else:
+            # Jika slug adalah link detail biasa
+            url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
+        
+        # Menggunakan session agar redirect diikuti secara otomatis
+        # Timeout dinaikkan ke 15 karena proses import butuh waktu lebih lama
+        resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
         resp.raise_for_status()
 
+        # Update slug asli jika terjadi redirect (opsional, untuk konsistensi)
+        final_url = resp.url
+        
         soup = BeautifulSoup(resp.text, "html.parser")
 
         # =========================
@@ -495,7 +506,8 @@ def scrape_detail(slug: str):
             "description": description,
             "tags": tags,
             "total_episode": total_episode,
-            "episode_raw": episode_text
+            "episode_raw": episode_text,
+            "final_slug": extract_slug(final_url) # Memberitahu slug asli setelah diimport
         }
 
     except Exception as e:
