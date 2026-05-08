@@ -16,6 +16,7 @@ import httpx
 import asyncio
 
 app = FastAPI()
+__all__ = ["app"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 🔥 bisa dibatasi nanti
