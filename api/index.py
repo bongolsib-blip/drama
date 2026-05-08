@@ -436,94 +436,82 @@ async def scrape_full_search(q: str, page: int = 1):
 # =========================
 
 def scrape_detail(slug: str):
-    # ==========================================
-    # 1. PENENTUAN URL (IMPORT VS LOKAL)
-    # ==========================================
-    if slug.startswith("import?"):
-        query_part = slug.replace("import?", "")
-        url = f"{BASE_DOMAIN}/{slug}"
-    else:
-        url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
-
-    max_retries = 15    # Maksimal refresh (misal 15 kali)
-    retry_delay = 5    # Jeda antar refresh (5 detik)
-    
     try:
-        for attempt in range(max_retries):
-            # Gunakan timeout standar karena kita akan mengandalkan loop untuk waktu lama
-            resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
-            resp.raise_for_status()
-            
-            final_url = resp.url
-            soup = BeautifulSoup(resp.text, "html.parser")
+        # =========================
+        # PENENTUAN URL (IMPORT VS LOKAL)
+        # =========================
+        if slug.startswith("import?"):
+            # Jika slug adalah link import (hasil dari scrape_full_search)
+            query_part = slug.replace("import?", "")
+            url = f"{BASE_DOMAIN}/search/import?{query_part}"
+        else:
+            # Jika slug adalah link detail biasa
+            url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
+        
+        # Menggunakan session agar redirect diikuti secara otomatis
+        # Timeout dinaikkan ke 15 karena proses import butuh waktu lebih lama
+        resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+        resp.raise_for_status()
 
-            # ==========================================
-            # 2. DETEKSI STATUS HALAMAN (WAITING/ERROR/SUCCESS)
-            # ==========================================
-            wait_card = soup.find("article", class_="import-wait-card")
-            
-            if wait_card:
-                # Cek apakah ada pesan error yang muncul di card
-                error_tag = wait_card.find("p", id="import-wait-error")
-                # Jika element error ada dan style-nya bukan 'display: none'
-                if error_tag and "display: none" not in str(error_tag.get("style", "")):
-                    return {
-                        "status": "failed",
-                        "error": error_tag.get_text(strip=True)
-                    }
-                
-                # Jika masih memuat, tunggu sebentar lalu iterasi lagi (refresh)
-                print(f"[*] Sedang memuat data... Percobaan {attempt + 1}/{max_retries}")
-                time.sleep(retry_delay)
-                continue
-            
-            # ==========================================
-            # 3. PARSING DATA (JIKA SUDAH BERHASIL)
-            # ==========================================
-            # Title
-            title_tag = soup.find("h1", class_="movie-title")
-            title = title_tag.get_text(strip=True) if title_tag else ""
+        # Update slug asli jika terjadi redirect (opsional, untuk konsistensi)
+        final_url = resp.url
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-            # Episode Info
-            sub_tag = soup.find("p", class_="movie-sub")
-            episode_text = sub_tag.get_text(" ", strip=True) if sub_tag else ""
-            
-            total_episode = 0
-            match = re.search(r"(\d+)\s*Episode", episode_text)
-            if match:
-                total_episode = int(match.group(1))
+        # =========================
+        # TITLE (FIXED)
+        # =========================
+        title_tag = soup.find("h1", class_="movie-title")
+        title = title_tag.get_text(strip=True) if title_tag else ""
 
-            # Description
-            desc_tag = soup.find("div", class_="movie-desc")
-            description = desc_tag.get_text(strip=True) if desc_tag else ""
+        # =========================
+        # EPISODE INFO (FIXED)
+        # =========================
+        sub_tag = soup.find("p", class_="movie-sub")
+        episode_text = sub_tag.get_text(" ", strip=True) if sub_tag else ""
 
-            # Tags
-            tags = [tag.get_text(strip=True) for tag in soup.find_all("a", class_="movie-tag-pill")]
+        # extract angka episode
+        total_episode = 0
+        match = re.search(r"(\d+)\s*Episode", episode_text)
+        if match:
+            total_episode = int(match.group(1))
 
-            # Thumbnail
-            img_tag = soup.find("img", class_="poster") or soup.find("img")
-            thumbnail = img_tag.get("src") if img_tag else None
-            if thumbnail and thumbnail.startswith("/"):
-                thumbnail = BASE_DOMAIN + thumbnail
+        # =========================
+        # DESCRIPTION (FIXED)
+        # =========================
+        desc_tag = soup.find("div", class_="movie-desc")
+        description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-            # Jika sampai sini, berarti data berhasil didapat
-            return {
-                "status": "success",
-                "data": {
-                    "title": title,
-                    "thumbnail": thumbnail,
-                    "description": description,
-                    "tags": tags,
-                    "total_episode": total_episode,
-                    "episode_raw": episode_text,
-                    "final_slug": extract_slug(final_url)
-                }
-            }
+        # =========================
+        # TAGS (FIXED)
+        # =========================
+        tags = []
+        for tag in soup.find_all("a", class_="movie-tag-pill"):
+            tags.append(tag.get_text(strip=True))
 
-        return {"status": "timeout", "error": "Proses import terlalu lama, silakan cek manual."}
+        # =========================
+        # THUMBNAIL (fallback aman)
+        # =========================
+        img_tag = soup.find("img", class_="poster")
+        if not img_tag:
+            img_tag = soup.find("img")
+
+        thumbnail = img_tag.get("src") if img_tag else None
+        if thumbnail and thumbnail.startswith("/"):
+            thumbnail = BASE_DOMAIN + thumbnail
+
+        return {
+            "title": title,
+            "thumbnail": thumbnail,
+            "description": description,
+            "tags": tags,
+            "total_episode": total_episode,
+            "episode_raw": episode_text,
+            "final_slug": extract_slug(final_url) # Memberitahu slug asli setelah diimport
+        }
 
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"error": str(e)}
 # =========================
 # EPISODES
 # =========================
