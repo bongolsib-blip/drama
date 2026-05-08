@@ -355,8 +355,86 @@ async def scrape_search_results(q: str):
 
         except Exception as e:
             return {"error": str(e), "items": []}
+# =========================
+# scrape_search_full 🔥
+# =========================
+async def scrape_full_search(q: str, page: int = 1):
+    # Endpoint halaman pencarian penuh
+    url = f"{BASE_DOMAIN}/search"
+    params = {
+        'q': q,
+        'lang': 'id-ID',
+        'page': page
+    }
+    
+    # Gunakan header browser biasa (JANGAN pakai X-Requested-With)
+    # Agar server mengirimkan HTML penuh, bukan JSON dropdown
+    FULL_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Referer": f"{BASE_DOMAIN}/"
+    }
+    
+    async with httpx.AsyncClient(headers=FULL_HEADERS, timeout=15.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(url, params=params)
+            if resp.status_code != 200:
+                return {"error": f"Site returned {resp.status_code}", "items": []}
 
+            soup = BeautifulSoup(resp.text, "html.parser")
+            items = []
 
+            # Mencari elemen kartu drama di halaman grid
+            # Berdasarkan struktur umum narto-drama: article.card
+            cards = soup.find_all("article", class_="card")
+            
+            for card in cards:
+                title_tag = card.find("h3", class_="title")
+                link_tag = card.find("a", class_="card-link-overlay")
+                img_tag = card.find("img", class_="poster")
+                
+                # Mengambil Tags (biasanya ada di halaman grid)
+                tags = [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
+                
+                # Mengambil Info Episode (jika ada, misal: "Full" atau "Ep 100")
+                ep_status = card.find("div", class_="card-ep")
+                status_text = ep_status.get_text(strip=True) if ep_status else ""
+
+                if title_tag and link_tag:
+                    href = link_tag.get("href", "")
+                    full_url = f"{BASE_DOMAIN}{href}" if href.startswith("/") else href
+                    
+                    thumb = img_tag.get("src") if img_tag else None
+                    if thumb and thumb.startswith("/"):
+                        thumb = f"{BASE_DOMAIN}{thumb}"
+
+                    items.append({
+                        "title": title_tag.get_text(strip=True),
+                        "href": full_url.split("?")[0],
+                        "slug": extract_slug(full_url),
+                        "thumbnail": thumb,
+                        "status": status_text,
+                        "tags": tags
+                    })
+
+            # Cek Navigasi Halaman Selanjutnya (Pagination)
+            has_next = False
+            pager = soup.find("div", class_="pager")
+            if pager:
+                next_btn = pager.find("a", class_="pager-link", string=lambda x: x and "Next" in x)
+                if next_btn:
+                    has_next = True
+
+            return {
+                "query": q,
+                "current_page": page,
+                "has_next": has_next,
+                "count": len(items),
+                "items": items
+            }
+
+        except Exception as e:
+            return {"error": str(e), "items": []}
 # =========================
 # DETAIL ENDPOINT 🔥
 # =========================
@@ -548,6 +626,10 @@ def list_all(max_page: int = 5, delay: float = 1):
 async def search(q: str):
     # Jangan gunakan scrape_list(url) karena strukturnya beda
     return await scrape_search_results(q)
+
+@app.get("/search-full")
+async def search_full(q: str, page: int = 1):
+    return await scrape_full_search(q, page)
 
 
 @app.get("/detail")
