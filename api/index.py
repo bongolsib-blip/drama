@@ -1,25 +1,25 @@
-from fastapi import FastAPI, Query
-from fastapi import Request
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from fastapi.responses import StreamingResponse, JSONResponse
 from mangum import Mangum
 import requests
 from bs4 import BeautifulSoup
 import re
 import json
-from urllib.parse import urlparse
-from urllib.parse import unquote
 from urllib.parse import urlparse, parse_qs, urlencode, unquote
 import time
 import httpx
 import asyncio
 
+# =========================
+# APP INIT
+# =========================
 app = FastAPI()
 __all__ = ["app"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 🔥 bisa dibatasi nanti
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -45,137 +45,64 @@ STREAM_HEADERS = {
     "Origin": BASE_DOMAIN
 }
 
+video_cache = {}
+VIDEO_CACHE_TTL = 0
+
 # =========================
-# genere
+# GENRE
 # =========================
 def normalize_genres(tags, title):
     genres = set()
 
-    # 🔥 mapping ke 10 genre utama
     tag_map = {
-        # Romance
-        "romantis": "Romance",
-        "romansa": "Romance",
-        "cinta": "Romance",
-        "love": "Romance",
-        "nikah": "Romance",
-
-        # Drama
-        "ceo": "Drama",
-        "kantoran": "Drama",
-        "kehidupan": "Drama",
-        "modern": "Drama",
-
-        # Comedy
-        "komedi": "Comedy",
-        "lucu": "Comedy",
-        "kocak": "Comedy",
-
-        # Action
-        "aksi": "Action",
-        "dewa perang": "Action",
-        "perang": "Action",
-        "pertarungan": "Action",
-
-        # Fantasy
-        "fantasi": "Fantasy",
-        "sistem": "Fantasy",
-        "reinkarnasi": "Fantasy",
-        "time travel": "Fantasy",
-        "kelahiran kembali": "Fantasy",
-        "kekuatan super": "Fantasy",
-        "transmigrasi": "Fantasy",
-
-        # Family
-        "keluarga": "Family",
-        "anak": "Family",
-        "ayah": "Family",
-        "ibu": "Family",
-
-        # Business
-        "bisnis": "Business",
-        "miliarder": "Business",
-        "konglomerat": "Business",
-        "kaya": "Business",
-        "direktur": "Business",
-
-        # Crime
-        "mafia": "Crime",
-        "kriminal": "Crime",
-        "penjara": "Crime",
-        "pembunuh": "Crime",
-
-        # Mystery
-        "misteri": "Mystery",
-        "rahasia": "Mystery",
-        "detektif": "Mystery",
-
-        # Sci-Fi
-        "kiamat": "Sci-Fi",
-        "apokalips": "Sci-Fi",
-        "monster": "Sci-Fi",
-        "alien": "Sci-Fi"
+        "romantis": "Romance", "romansa": "Romance", "cinta": "Romance",
+        "love": "Romance", "nikah": "Romance",
+        "ceo": "Drama", "kantoran": "Drama", "kehidupan": "Drama", "modern": "Drama",
+        "komedi": "Comedy", "lucu": "Comedy", "kocak": "Comedy",
+        "aksi": "Action", "dewa perang": "Action", "perang": "Action", "pertarungan": "Action",
+        "fantasi": "Fantasy", "sistem": "Fantasy", "reinkarnasi": "Fantasy",
+        "time travel": "Fantasy", "kelahiran kembali": "Fantasy",
+        "kekuatan super": "Fantasy", "transmigrasi": "Fantasy",
+        "keluarga": "Family", "anak": "Family", "ayah": "Family", "ibu": "Family",
+        "bisnis": "Business", "miliarder": "Business", "konglomerat": "Business",
+        "kaya": "Business", "direktur": "Business",
+        "mafia": "Crime", "kriminal": "Crime", "penjara": "Crime", "pembunuh": "Crime",
+        "misteri": "Mystery", "rahasia": "Mystery", "detektif": "Mystery",
+        "kiamat": "Sci-Fi", "apokalips": "Sci-Fi", "monster": "Sci-Fi", "alien": "Sci-Fi"
     }
 
-    # =========================
-    # dari TAG
-    # =========================
     for tag in tags:
         t = tag.lower()
-
         for key, val in tag_map.items():
             if key in t:
                 genres.add(val)
 
-    # =========================
-    # fallback dari JUDUL 🔥
-    # =========================
     t = title.lower()
+    if "cinta" in t or "nikah" in t: genres.add("Romance")
+    if "bos" in t or "ceo" in t: genres.add("Drama"); genres.add("Business")
+    if "balas" in t or "dendam" in t: genres.add("Action")
+    if "sistem" in t or "reinkarnasi" in t: genres.add("Fantasy")
+    if "keluarga" in t or "anak" in t: genres.add("Family")
+    if "mafia" in t or "penjara" in t: genres.add("Crime")
+    if "rahasia" in t: genres.add("Mystery")
+    if "kiamat" in t: genres.add("Sci-Fi")
 
-    if "cinta" in t or "nikah" in t:
-        genres.add("Romance")
-
-    if "bos" in t or "ceo" in t:
-        genres.add("Drama")
-        genres.add("Business")
-
-    if "balas" in t or "dendam" in t:
-        genres.add("Action")
-
-    if "sistem" in t or "reinkarnasi" in t:
-        genres.add("Fantasy")
-
-    if "keluarga" in t or "anak" in t:
-        genres.add("Family")
-
-    if "mafia" in t or "penjara" in t:
-        genres.add("Crime")
-
-    if "rahasia" in t:
-        genres.add("Mystery")
-
-    if "kiamat" in t:
-        genres.add("Sci-Fi")
-
-    # =========================
-    # fallback terakhir
-    # =========================
     if not genres:
         genres.add("Drama")
 
     return list(genres)
 
-# -------------------
 VALID_GENRES = {
-    "Romance","Drama","Comedy","Action","Fantasy",
-    "Family","Business","Crime","Mystery","Sci-Fi"
+    "Romance", "Drama", "Comedy", "Action", "Fantasy",
+    "Family", "Business", "Crime", "Mystery", "Sci-Fi"
 }
 
 def clean_genres(genres):
     return [g for g in genres if g in VALID_GENRES]
 
-# ---------------
-
+# =========================
+# CACHE / INDEX
+# =========================
 def build_index(max_page=20, delay=0.5):
     global ALL_DRAMAS, GENRE_INDEX, LAST_UPDATE
 
@@ -190,16 +117,9 @@ def build_index(max_page=20, delay=0.5):
             break
 
         for item in data["items"]:
-            # =========================
-            # GENRE PROCESSING 🔥
-            # =========================
             genres = normalize_genres(item["tags"], item["title"])
             genres = clean_genres(genres)
             item["genres"] = genres
-
-            # =========================
-            # SAVE
-            # =========================
             ALL_DRAMAS.append(item)
 
             for g in genres:
@@ -213,15 +133,11 @@ def build_index(max_page=20, delay=0.5):
         time.sleep(delay)
 
     LAST_UPDATE = time.time()
-# -----------------
 
 def ensure_cache():
     global LAST_UPDATE
-
     if time.time() - LAST_UPDATE > CACHE_TTL or not ALL_DRAMAS:
         build_index()
-
-# ----------------
 
 # =========================
 # UTIL
@@ -234,10 +150,8 @@ def extract_slug(url: str) -> str:
     except:
         return ""
 
-
 def clean_url(url: str):
     return url.replace("\\/", "/").replace("\\u0026", "&")
-
 
 # =========================
 # SCRAPE LIST
@@ -246,13 +160,10 @@ def scrape_list(url):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
-
         soup = BeautifulSoup(resp.text, "html.parser")
-
         items = []
 
         for card in soup.find_all("article", class_="card"):
-
             title_tag = card.find("h3", class_="title")
             title = title_tag.get_text(strip=True) if title_tag else ""
 
@@ -278,60 +189,43 @@ def scrape_list(url):
                     "tags": tags
                 })
 
-        # =========================
-        # 🔥 NEXT PAGE FIX
-        # =========================
         has_next = False
-
         pager = soup.find("div", class_="pager")
         if pager:
             next_btn = pager.find("a", class_="pager-link", string=lambda x: x and "Next" in x)
             if next_btn:
                 has_next = True
 
-        return {
-            "items": items,
-            "has_next": has_next
-        }
+        return {"items": items, "has_next": has_next}
 
     except Exception as e:
         return {"error": str(e)}
 
 # =========================
-# scrape_search_resu 🔥
+# SCRAPE SEARCH (JSON)
 # =========================
-
 async def scrape_search_results(q: str):
     url = f"{BASE_DOMAIN}/search"
-    params = {
-        'q': q,
-        'lang': 'id-ID'
-    }
-    
+    params = {'q': q, 'lang': 'id-ID'}
+
     SEARCH_HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "X-Requested-With": "XMLHttpRequest",
         "Referer": f"{BASE_DOMAIN}/",
-        "Accept": "application/json, text/javascript, */*; q=0.01" # Minta format JSON
+        "Accept": "application/json, text/javascript, */*; q=0.01"
     }
-    
+
     async with httpx.AsyncClient(headers=SEARCH_HEADERS, timeout=15.0) as client:
         try:
             resp = await client.get(url, params=params)
-            
-            # Jika respon adalah JSON (sesuai log kamu)
             if resp.status_code == 200:
                 try:
-                    data = resp.json() # Mengubah string JSON menjadi Dictionary Python
-                    
+                    data = resp.json()
                     raw_items = data.get("items", [])
                     results = []
-                    
+
                     for item in raw_items:
-                        # Ambil URL asli
                         original_url = item.get("url", "")
-                        
-                        # Ambil poster dan pastikan URL-nya lengkap
                         poster = item.get("poster_url", "")
                         if poster and poster.startswith("/"):
                             poster = f"{BASE_DOMAIN}{poster}"
@@ -344,33 +238,28 @@ async def scrape_search_results(q: str):
                             "description": item.get("description", ""),
                             "tags": item.get("tags", [])
                         })
-                    
-                    return {
-                        "status": "success",
-                        "count": len(results),
-                        "items": results
-                    }
-                except Exception as json_err:
-                    # Jika gagal parsing JSON, berarti formatnya berubah kembali ke HTML
-                    return {"error": "Format JSON tidak valid", "raw": resp.text[:500]}
-            
-            return {"error": f"Server status {resp.status_code}", "items": []}
 
+                    return {"status": "success", "count": len(results), "items": results}
+                except Exception:
+                    return {"error": "Format JSON tidak valid", "raw": resp.text[:500]}
+
+            return {"error": f"Server status {resp.status_code}", "items": []}
         except Exception as e:
             return {"error": str(e), "items": []}
+
 # =========================
-# scrape_search_full 🔥
+# SCRAPE SEARCH (HTML FULL)
 # =========================
 async def scrape_full_search(q: str, page: int = 1):
     url = f"{BASE_DOMAIN}/search"
     params = {'q': q, 'lang': 'id-ID', 'page': page}
-    
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Referer": f"{BASE_DOMAIN}/"
     }
-    
+
     async with httpx.AsyncClient(headers=headers, timeout=15.0, follow_redirects=True) as client:
         try:
             resp = await client.get(url, params=params)
@@ -384,26 +273,22 @@ async def scrape_full_search(q: str, page: int = 1):
                 title_tag = card.find("h3", class_="title")
                 link_tag = card.find("a", class_="card-link-overlay")
                 img_tag = card.find("img", class_="poster")
-                
+
                 if title_tag and link_tag:
                     raw_href = link_tag.get("href", "")
                     title = title_tag.get_text(strip=True)
-                    
-                    # LOGIKA HANDING LINK IMPORT VS LOCAL
+
                     if "/search/import" in raw_href:
-                        # Link import: simpan seluruh query sebagai slug
                         parsed = urlparse(raw_href)
-                        slug = f"import?{parsed.query}" # Contoh: import?provider=...&book_id=...
+                        slug = f"import?{parsed.query}"
                         item_type = "import"
                         full_url = f"{BASE_DOMAIN}{raw_href}" if raw_href.startswith("/") else raw_href
                     else:
-                        # Link Lokal: ambil slug ujungnya saja
                         clean_href = raw_href.split("?")[0]
                         slug = extract_slug(clean_href)
                         item_type = "local"
                         full_url = f"{BASE_DOMAIN}{clean_href}" if clean_href.startswith("/") else clean_href
 
-                    # THUMBNAIL
                     thumb = img_tag.get("src") if img_tag else None
                     if thumb and thumb.startswith("/"):
                         thumb = f"{BASE_DOMAIN}{thumb}"
@@ -433,19 +318,72 @@ async def scrape_full_search(q: str, page: int = 1):
             }
         except Exception as e:
             return {"error": str(e), "items": []}
-# =========================
-# DETAIL ENDPOINT 🔥
-# =========================
 
+# =========================
+# RESOLVE IMPORT (INTERNAL)
+# =========================
+async def resolve_import_internal(slug: str):
+    decoded_slug = unquote(slug)
+
+    if not decoded_slug.startswith("import?"):
+        return {"final_slug": decoded_slug}
+
+    query_part = decoded_slug[len("import?"):]
+    import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
+
+    for attempt in range(10):
+        try:
+            resp = requests.get(import_url, headers=HEADERS, timeout=15, allow_redirects=True)
+            final_url = str(resp.url)
+
+            print(f"[resolve-import] Attempt {attempt+1}: {final_url}")
+
+            # Sukses: sudah redirect ke detail
+            if "/detail/watch/" in final_url:
+                return {"final_slug": extract_slug(final_url.split("?")[0])}
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Cek meta refresh
+            meta_refresh = soup.find("meta", attrs={"http-equiv": "refresh"})
+            if meta_refresh:
+                content = meta_refresh.get("content", "")
+                url_match = re.search(r'url=(.+)', content, re.IGNORECASE)
+                if url_match:
+                    redirect_url = url_match.group(1).strip()
+                    if not redirect_url.startswith("http"):
+                        redirect_url = BASE_DOMAIN + redirect_url
+                    if "/detail/watch/" in redirect_url:
+                        return {"final_slug": extract_slug(redirect_url.split("?")[0])}
+
+            # Cek JS redirect
+            for script in soup.find_all("script"):
+                text = script.get_text()
+                match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
+                if match and "/detail/watch/" in match.group(1):
+                    return {"final_slug": extract_slug(match.group(1).split("?")[0])}
+
+            # Cek link langsung
+            detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
+            if detail_link:
+                return {"final_slug": extract_slug(detail_link["href"].split("?")[0])}
+
+            print(f"[resolve-import] Belum selesai, retry {attempt+1}/10...")
+            time.sleep(2)
+
+        except Exception as e:
+            print(f"[resolve-import] Error attempt {attempt+1}: {e}")
+            time.sleep(2)
+
+    return {"final_slug": None}
+
+# =========================
+# SCRAPE DETAIL
+# =========================
 def scrape_detail(slug: str):
     try:
-        if slug.startswith("import?"):
-            query_part = slug[len("import?"):]  # ambil semua setelah "import?"
-            url = f"{BASE_DOMAIN}/search/import?{query_part}"
-        else:
-            url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
-
-        print(f"[scrape_detail] Fetching: {url}")  # debug log
+        url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
+        print(f"[scrape_detail] Fetching: {url}")
 
         resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
         resp.raise_for_status()
@@ -483,24 +421,21 @@ def scrape_detail(slug: str):
             "tags": tags,
             "total_episode": total_episode,
             "episode_raw": episode_text,
-            "original_slug": slug,
             "final_slug": final_slug,
-            "was_imported": slug.startswith("import?")
         }
 
     except Exception as e:
         return {"error": str(e)}
+
 # =========================
 # EPISODES
 # =========================
 def get_total_episodes(slug: str):
-    url = f"{BASE_DOMAIN}/{slug}"
+    url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID"
     resp = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
-
     episodes = soup.find_all("a", class_="episode-item")
     return len(episodes)
-
 
 # =========================
 # VIDEO
@@ -512,21 +447,17 @@ def get_all_video_links(slug: str):
     if resp.status_code != 200:
         return []
 
-    html = resp.text
-
-    match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', html)
+    match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', resp.text)
     if not match:
         return []
 
     episodes = json.loads(match.group(1))
-
     result = []
 
     for item in episodes:
         play_url = item.get("play_url")
         if play_url:
             play_url = play_url.replace("\\/", "/")
-
         result.append({
             "episode": int(item.get("number", 0)),
             "video_url": play_url
@@ -534,44 +465,36 @@ def get_all_video_links(slug: str):
 
     return result
 
-video_cache = {}
-CACHE_TTL = 0  # 5 menit
-
 def get_video_src(slug: str, ep: int):
     key = f"{slug}_{ep}"
     now = time.time()
-    
-    # Cek cache + expiry
+
     if key in video_cache:
         cached = video_cache[key]
-        if now - cached["time"] < CACHE_TTL:
+        if now - cached["time"] < VIDEO_CACHE_TTL:
             return cached["url"]
-            
+
     refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source?lang=id-ID&force=1"
-    
+
     for _ in range(5):
         try:
             resp = requests.get(refresh_url, headers=HEADERS, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 url = data.get("play_url")
-                
+
                 if url:
-                    # Logika tambahan: Jika play_url mengandung domain proxy tertentu
                     if "/stream/proxy?ah=narto-drama.com" in url:
-                        # Ambil direct_play_url jika tersedia, jika tidak tetap pakai url awal
                         url = data.get("direct_play_url", url)
 
-                    video_cache[key] = {
-                        "url": url,
-                        "time": now
-                    }
+                    video_cache[key] = {"url": url, "time": now}
                     return url
-        except Exception as e:
-            # Opsional: print(f"Error: {e}") untuk debugging
+        except Exception:
             pass
         time.sleep(1.5)
+
     return None
+
 # =========================
 # ROUTES
 # =========================
@@ -584,10 +507,7 @@ def home():
 @app.get("/list")
 def list_api(page: int = 1):
     url = f"{BASE_DOMAIN}/?lang=id-ID&page={page}"
-    return {
-        "page": page,
-        "data": scrape_list(url)
-    }
+    return {"page": page, "data": scrape_list(url)}
 
 
 @app.get("/list-all")
@@ -606,121 +526,55 @@ def list_all(max_page: int = 5, delay: float = 1):
 
         time.sleep(delay)
 
-    return {
-        "total": len(all_items),
-        "data": all_items
-    }
+    return {"total": len(all_items), "data": all_items}
 
 
 @app.get("/search")
 async def search(q: str):
-    # Jangan gunakan scrape_list(url) karena strukturnya beda
     return await scrape_search_results(q)
+
 
 @app.get("/search-full")
 async def search_full(q: str, page: int = 1):
     return await scrape_full_search(q, page)
 
+
 @app.get("/resolve-import")
-async def resolve_import(slug: str = Query(...)):
-    """
-    Khusus untuk slug yang mengandung 'import?...'
-    Akan polling sampai import selesai dan return final_slug
-    """
-    # Decode jika perlu
+async def resolve_import_endpoint(slug: str = Query(...)):
     decoded_slug = unquote(slug)
-    
+
     if not decoded_slug.startswith("import?"):
         return {"error": "Bukan import slug", "final_slug": decoded_slug}
-    
-    query_part = decoded_slug[len("import?"):]
-    import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
-    
-    final_slug = None
-    max_attempts = 10
-    
-    for attempt in range(max_attempts):
-        try:
-            resp = requests.get(import_url, headers=HEADERS, timeout=15, allow_redirects=True)
-            final_url = str(resp.url)
-            
-            print(f"[resolve-import] Attempt {attempt+1}: {final_url}")
-            
-            # Cek apakah sudah redirect ke detail page
-            if "/detail/watch/" in final_url:
-                final_slug = extract_slug(final_url.split("?")[0])
-                break
-            
-            # Cek apakah ada meta redirect atau js redirect di HTML
-            soup = BeautifulSoup(resp.text, "html.parser")
-            
-            # Cek meta refresh
-            meta_refresh = soup.find("meta", attrs={"http-equiv": "refresh"})
-            if meta_refresh:
-                content = meta_refresh.get("content", "")
-                url_match = re.search(r'url=(.+)', content, re.IGNORECASE)
-                if url_match:
-                    redirect_url = url_match.group(1).strip()
-                    if not redirect_url.startswith("http"):
-                        redirect_url = BASE_DOMAIN + redirect_url
-                    final_slug = extract_slug(redirect_url.split("?")[0])
-                    break
-            
-            # Cek apakah ada link ke detail di dalam halaman
-            detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
-            if detail_link:
-                href = detail_link.get("href", "")
-                final_slug = extract_slug(href.split("?")[0])
-                break
-            
-            # Cek window.location atau JS redirect
-            scripts = soup.find_all("script")
-            for script in scripts:
-                text = script.get_text()
-                loc_match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
-                if loc_match:
-                    redirect_url = loc_match.group(1)
-                    if "/detail/watch/" in redirect_url:
-                        final_slug = extract_slug(redirect_url.split("?")[0])
-                        break
-            
-            if final_slug:
-                break
-                
-            # Belum selesai, tunggu sebentar
-            print(f"[resolve-import] Import belum selesai, retry {attempt+1}/{max_attempts}...")
-            time.sleep(2)
-            
-        except Exception as e:
-            print(f"[resolve-import] Error attempt {attempt+1}: {e}")
-            time.sleep(2)
-    
-    if not final_slug:
+
+    result = await resolve_import_internal(decoded_slug)
+
+    if not result.get("final_slug"):
         return {
             "status": "failed",
             "message": "Import tidak selesai setelah beberapa percobaan",
             "final_slug": None
         }
-    
+
     return {
         "status": "success",
-        "final_slug": final_slug,
-        "import_url": import_url
+        "final_slug": result["final_slug"]
     }
+
 
 @app.get("/detail")
 async def detail(request: Request):
+    # 🔥 Ambil raw query agar slug import tidak terpotong
     raw_query = str(request.url.query)
-    
+
     if raw_query.startswith("slug="):
         full_slug = unquote(raw_query[len("slug="):])
     else:
         full_slug = request.query_params.get("slug", "")
-    
-    # 🔥 Jika import slug, resolve dulu
+
+    # Import slug → resolve dulu
     if full_slug.startswith("import?") or full_slug == "import":
         resolve_result = await resolve_import_internal(full_slug)
-        
+
         if not resolve_result.get("final_slug"):
             return {
                 "slug": full_slug,
@@ -729,10 +583,10 @@ async def detail(request: Request):
                 "import_status": "failed",
                 "data": {"error": "Gagal import drama"}
             }
-        
+
         final_slug = resolve_result["final_slug"]
-        data = scrape_detail(final_slug)  # scrape dengan slug yang sudah bener
-        
+        data = scrape_detail(final_slug)
+
         return {
             "slug": full_slug,
             "final_slug": final_slug,
@@ -740,7 +594,7 @@ async def detail(request: Request):
             "import_status": "success",
             "data": data
         }
-    
+
     # Slug biasa
     data = scrape_detail(full_slug)
     return {
@@ -751,99 +605,60 @@ async def detail(request: Request):
         "data": data
     }
 
-# Helper internal (tidak expose sebagai endpoint)
-async def resolve_import_internal(slug: str):
-    decoded_slug = unquote(slug)
-    
-    if not decoded_slug.startswith("import?"):
-        return {"final_slug": decoded_slug}
-    
-    query_part = decoded_slug[len("import?"):]
-    import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
-    
-    for attempt in range(10):
-        try:
-            resp = requests.get(import_url, headers=HEADERS, timeout=15, allow_redirects=True)
-            final_url = str(resp.url)
-            
-            if "/detail/watch/" in final_url:
-                return {"final_slug": extract_slug(final_url.split("?")[0])}
-            
-            soup = BeautifulSoup(resp.text, "html.parser")
-            
-            # Cek semua kemungkinan redirect
-            for script in soup.find_all("script"):
-                text = script.get_text()
-                match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
-                if match and "/detail/watch/" in match.group(1):
-                    return {"final_slug": extract_slug(match.group(1).split("?")[0])}
-            
-            detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
-            if detail_link:
-                return {"final_slug": extract_slug(detail_link["href"].split("?")[0])}
-            
-            time.sleep(2)
-        except Exception as e:
-            time.sleep(2)
-    
-    return {"final_slug": None}
 
-@app.get("/video")
-async def video(request: Request, ep: int = 1):
+@app.get("/episodes")
+async def episodes(request: Request):
+    # 🔥 Ambil raw query agar slug tidak terpotong
     raw_query = str(request.url.query)
     slug_part = ""
-    
+
     for param in raw_query.split("&"):
         if param.startswith("slug="):
             slug_part = unquote(param[len("slug="):])
             break
-    
-    # 🔥 Auto-resolve jika masih import slug
+
+    # Auto-resolve jika masih import slug
+    if slug_part.startswith("import?") or slug_part == "import":
+        resolve = await resolve_import_internal(slug_part)
+        if not resolve.get("final_slug"):
+            return {"error": "Gagal resolve import slug", "total_episode": 0}
+        slug_part = resolve["final_slug"]
+
+    return {
+        "slug": slug_part,
+        "total_episode": get_total_episodes(slug_part)
+    }
+
+
+@app.get("/videos")
+def videos(slug: str):
+    return {"slug": slug, "data": get_all_video_links(slug)}
+
+
+@app.get("/video")
+async def video(request: Request, ep: int = 1):
+    # 🔥 Ambil raw query agar slug tidak terpotong
+    raw_query = str(request.url.query)
+    slug_part = ""
+
+    for param in raw_query.split("&"):
+        if param.startswith("slug="):
+            slug_part = unquote(param[len("slug="):])
+            break
+
+    # Auto-resolve jika masih import slug
     if slug_part.startswith("import?") or slug_part == "import":
         resolve = await resolve_import_internal(slug_part)
         if not resolve.get("final_slug"):
             return {"error": "Gagal resolve import slug", "video_url": None}
         slug_part = resolve["final_slug"]
-    
+
     return {
         "slug": slug_part,
         "episode": ep,
         "video_url": get_video_src(slug_part, ep)
     }
 
-@app.get("/episodes")  
-async def episodes(request: Request):
-    raw_query = str(request.url.query)
-    slug_part = ""
-    
-    for param in raw_query.split("&"):
-        if param.startswith("slug="):
-            slug_part = unquote(param[len("slug="):])
-            break
-    
-    # 🔥 Auto-resolve jika masih import slug
-    if slug_part.startswith("import?") or slug_part == "import":
-        resolve = await resolve_import_internal(slug_part)
-        if not resolve.get("final_slug"):
-            return {"error": "Gagal resolve import slug", "total_episode": 0}
-        slug_part = resolve["final_slug"]
-    
-    return {
-        "slug": slug_part,
-
-
-@app.get("/videos")
-def videos(slug: str):
-    return {
-        "slug": slug,
-        "data": get_all_video_links(slug)
-    }
-
-
-
-
-
-from fastapi import Request
 
 @app.get("/stream")
 async def stream(request: Request, url: str):
@@ -862,8 +677,6 @@ async def stream(request: Request, url: str):
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
         async with client.stream("GET", decoded_url, headers=headers) as r:
-
-            # 🔥 ambil header LANGSUNG dari response asli
             response_headers = {
                 "Content-Type": r.headers.get("content-type", "video/mp4"),
                 "Accept-Ranges": "bytes",
@@ -882,19 +695,18 @@ async def stream(request: Request, url: str):
                 status_code=r.status_code,
                 headers=response_headers,
             )
+
+
 @app.get("/genres")
 def get_genres():
     ensure_cache()
-    return {
-        "genres": list(GENRE_INDEX.keys())
-    }
+    return {"genres": list(GENRE_INDEX.keys())}
+
 
 @app.get("/genre/{genre}")
 def get_by_genre(genre: str, page: int = 1, limit: int = 20):
     ensure_cache()
-
     data = GENRE_INDEX.get(genre, [])
-
     start = (page - 1) * limit
     end = start + limit
 
@@ -902,10 +714,9 @@ def get_by_genre(genre: str, page: int = 1, limit: int = 20):
         "genre": genre,
         "total": len(data),
         "page": page,
-        "data": {
-            "items": data[start:end]  # 🔥 FIX: was `result[start:end]` (NameError)
-        }
+        "data": {"items": data[start:end]}
     }
+
 
 @app.get("/filter")
 def filter_api(
@@ -915,7 +726,6 @@ def filter_api(
     limit: int = 20
 ):
     ensure_cache()
-
     data = ALL_DRAMAS
 
     if genre:
