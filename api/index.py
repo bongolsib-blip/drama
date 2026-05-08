@@ -437,21 +437,19 @@ async def scrape_full_search(q: str, page: int = 1):
 
 def scrape_detail(slug: str):
     try:
-        # =========================
-        # PENENTUAN URL (IMPORT VS LOKAL)
-        # =========================
         if slug.startswith("import?"):
-            query_part = slug.replace("import?", "")
+            query_part = slug[len("import?"):]  # ambil semua setelah "import?"
             url = f"{BASE_DOMAIN}/search/import?{query_part}"
         else:
             url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
-        
+
+        print(f"[scrape_detail] Fetching: {url}")  # debug log
+
         resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
         resp.raise_for_status()
 
-        # 🔥 FIX: Ambil final_slug dari URL setelah redirect
-        final_url = str(resp.url)  # pastikan string
-        final_slug = extract_slug(final_url.split("?")[0])  # buang query params dulu
+        final_url = str(resp.url)
+        final_slug = extract_slug(final_url.split("?")[0])
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -469,14 +467,9 @@ def scrape_detail(slug: str):
         desc_tag = soup.find("div", class_="movie-desc")
         description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-        tags = []
-        for tag in soup.find_all("a", class_="movie-tag-pill"):
-            tags.append(tag.get_text(strip=True))
+        tags = [tag.get_text(strip=True) for tag in soup.find_all("a", class_="movie-tag-pill")]
 
-        img_tag = soup.find("img", class_="poster")
-        if not img_tag:
-            img_tag = soup.find("img")
-
+        img_tag = soup.find("img", class_="poster") or soup.find("img")
         thumbnail = img_tag.get("src") if img_tag else None
         if thumbnail and thumbnail.startswith("/"):
             thumbnail = BASE_DOMAIN + thumbnail
@@ -488,9 +481,9 @@ def scrape_detail(slug: str):
             "tags": tags,
             "total_episode": total_episode,
             "episode_raw": episode_text,
-            "original_slug": slug,           # 🔥 slug yang diminta (mungkin import?)
-            "final_slug": final_slug,         # 🔥 slug asli setelah redirect
-            "was_imported": slug.startswith("import?")  # 🔥 flag untuk client
+            "original_slug": slug,
+            "final_slug": final_slug,
+            "was_imported": slug.startswith("import?")
         }
 
     except Exception as e:
@@ -628,13 +621,23 @@ async def search_full(q: str, page: int = 1):
 
 
 @app.get("/detail")
-def detail(slug: str):
-    data = scrape_detail(slug)
+async def detail(request: Request):
+    # 🔥 Ambil RAW query string agar tidak terpotong
+    raw_query = str(request.url.query)  # "slug=import?provider=...&book_id=...&title=..."
     
-    # 🔥 Kalau slug import, return final_slug agar client tahu slug yang harus dipakai
+    # Pisahkan slug= dari awal
+    if raw_query.startswith("slug="):
+        full_slug = raw_query[len("slug="):]  # ambil semua setelah "slug="
+        full_slug = unquote(full_slug)         # decode URL encoding
+    else:
+        # fallback biasa
+        full_slug = request.query_params.get("slug", "")
+
+    data = scrape_detail(full_slug)
+
     return {
-        "slug": slug,
-        "final_slug": data.get("final_slug", slug),  # slug yang harus dipakai untuk /video
+        "slug": full_slug,
+        "final_slug": data.get("final_slug", full_slug),
         "was_imported": data.get("was_imported", False),
         "data": data
     }
