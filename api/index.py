@@ -639,7 +639,7 @@ async def debug_search(q: str, page: int = 1):
                 "local_count": sum(1 for h in raw_hrefs if not h["is_import"]),
                 "pager_html": pager_html,
                 "script_hints": script_hints[:3],  # max 3 script
-                "html_snippet": soup  # 2000 karakter pertama HTML
+                "html_snippet": resp.text  # 2000 karakter pertama HTML
             }
         except Exception as e:
             return {"error": str(e)}
