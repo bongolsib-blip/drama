@@ -206,8 +206,46 @@ async def scrape_search_results(q: str):
         except Exception as e:
             return {"error": str(e), "items": []}
 
+async def fetch_provider(client, q: str, provider: str):
+    try:
+        resp = await client.get(
+            f"{BASE_DOMAIN}/search/providers/retry",
+            params={
+                'q': q,
+                'providers': provider,  # 🔥 satu provider saja
+                'limit': 100,
+                'full_search': 1,
+                'lang': 'id-ID'
+            },
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"{BASE_DOMAIN}/search?q={q}&lang=id-ID",
+                "Origin": BASE_DOMAIN,
+            },
+            timeout=10.0
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("items", [])
+            failed = data.get("failed_providers", [])
+            print(f"[provider:{provider}] got {len(items)} items, failed={failed}")
+            return items
+        return []
+    except Exception as e:
+        print(f"[provider:{provider}] error: {e}")
+        return []
+
+
 async def scrape_full_search(q: str, page: int = 1):
-    PROVIDERS = "shortmax,dramabox,dramabite,dramawave,dramanova,netshort,reelshort,idrama,shortmax,melolo,starshort,goodshort,flextv,fundrama,microdrama,bilitv,vigloo,velolo,reelala,stardusttv,flickreels,reelife"
+    PROVIDERS = [
+        "shortmax", "dramabox", "dramabite", "dramawave", "dramanova",
+        "netshort", "reelshort", "idrama", "melolo", "starshort",
+        "goodshort", "flextv", "fundrama", "microdrama", "bilitv",
+        "vigloo", "velolo", "reelala", "stardusttv", "flickreels", "reelife"
+    ]
 
     items = []
     seen_titles = set()
@@ -226,7 +264,6 @@ async def scrape_full_search(q: str, page: int = 1):
                     "Referer": f"{BASE_DOMAIN}/"
                 }
             )
-
             if html_resp.status_code == 200:
                 soup = BeautifulSoup(html_resp.text, "html.parser")
                 for card in soup.find_all("article", class_="card"):
@@ -267,63 +304,56 @@ async def scrape_full_search(q: str, page: int = 1):
         print(f"[search-html] Error: {e}")
 
     # ===========================
-    # FETCH API PROVIDERS (hanya page 1)
+    # FETCH PROVIDERS SATU-SATU
+    # hanya di page 1, dengan concurrency max 3
     # ===========================
     if page == 1:
+        semaphore = asyncio.Semaphore(3)  # max 3 provider paralel sekaligus
+
+        async def fetch_with_semaphore(client, provider):
+            async with semaphore:
+                result = await fetch_provider(client, q, provider)
+                await asyncio.sleep(0.3)  # jeda kecil antar provider
+                return result
+
         try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-                api_resp = await client.get(
-                    f"{BASE_DOMAIN}/search/providers/retry",
-                    params={
-                        'q': q,
-                        'providers': PROVIDERS,
-                        'limit': 1000,
-                        'full_search': 1,
-                        'lang': 'id-ID'
-                    },
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        "Accept": "application/json",
-                        "Referer": f"{BASE_DOMAIN}/"
-                    }
-                )
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                tasks = [fetch_with_semaphore(client, p) for p in PROVIDERS]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                print(f"[search-api] status={api_resp.status_code} len={len(api_resp.text)}")
+            for provider_items in results:
+                if isinstance(provider_items, Exception) or not provider_items:
+                    continue
 
-                if api_resp.status_code == 200:
-                    api_data = api_resp.json()
-                    api_items = api_data.get("items", [])
-                    print(f"[search-api] got {len(api_items)} items from providers")
+                for item in provider_items:
+                    title = item.get("title", "")
+                    title_key = title.lower().strip()
 
-                    for item in api_items:
-                        title = item.get("title", "")
-                        title_key = title.lower().strip()
+                    if title_key in seen_titles:
+                        continue
+                    seen_titles.add(title_key)
 
-                        if title_key in seen_titles:
-                            continue
-                        seen_titles.add(title_key)
+                    original_url = item.get("url", "")
+                    poster = item.get("poster_url", "")
+                    if poster and poster.startswith("/"):
+                        poster = f"{BASE_DOMAIN}{poster}"
 
-                        original_url = item.get("url", "")
-                        poster = item.get("poster_url", "")
-                        if poster and poster.startswith("/"):
-                            poster = f"{BASE_DOMAIN}{poster}"
+                    parsed = urlparse(original_url)
+                    slug = f"import?{parsed.query}" if "/search/import" in original_url else extract_slug(original_url)
 
-                        parsed = urlparse(original_url)
-                        slug = f"import?{parsed.query}" if "/search/import" in original_url else extract_slug(original_url)
-
-                        items.append({
-                            "title": title,
-                            "href": original_url,
-                            "slug": slug,
-                            "type": "import",
-                            "thumbnail": poster,
-                            "status": "",
-                            "tags": item.get("tags", []),
-                            "description": item.get("description", ""),
-                            "relevance_score": item.get("relevance_score", 0)
-                        })
+                    items.append({
+                        "title": title,
+                        "href": original_url,
+                        "slug": slug,
+                        "type": "import",
+                        "thumbnail": poster,
+                        "status": "",
+                        "tags": item.get("tags", []),
+                        "description": item.get("description", ""),
+                        "relevance_score": item.get("relevance_score", 0)
+                    })
         except Exception as e:
-            print(f"[search-api] Error: {e}")
+            print(f"[search-providers] Error: {e}")
 
     # ===========================
     # SORT & RETURN
