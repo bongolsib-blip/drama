@@ -650,56 +650,33 @@ def filter_api(genre: str = None, keyword: str = None, page: int = 1, limit: int
     end = start + limit
     return {"total": len(data), "page": page, "results": data[start:end]}
     
-@app.get("/debug-search")
-async def debug_search(q: str, page: int = 1):
-    url = f"{BASE_DOMAIN}/search"
-    params = {'q': q, 'lang': 'id-ID', 'page': page}
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": f"{BASE_DOMAIN}/"
-    }
-    async with httpx.AsyncClient(headers=headers, timeout=15.0, follow_redirects=True) as client:
-        try:
-            resp = await client.get(url, params=params)
-            soup = BeautifulSoup(resp.text, "html.parser")
-
-            # Hitung semua card yang ditemukan
-            all_cards = soup.find_all("article", class_="card")
-
-            # Ambil semua href mentah dari card
-            raw_hrefs = []
-            for card in all_cards:
-                link = card.find("a", class_="card-link-overlay")
-                title = card.find("h3", class_="title")
-                raw_hrefs.append({
-                    "title": title.get_text(strip=True) if title else "",
-                    "href": link.get("href", "") if link else "",
-                    "is_import": "/search/import" in (link.get("href", "") if link else "")
-                })
-
-            # Cek pager
-            pager = soup.find("div", class_="pager")
-            pager_html = str(pager) if pager else "TIDAK ADA PAGER"
-
-            # Cek apakah ada konten JS yang mungkin load drama tambahan
-            scripts = soup.find_all("script")
-            script_hints = []
-            for s in scripts:
-                t = s.get_text()
-                if "card" in t.lower() or "drama" in t.lower() or "item" in t.lower():
-                    script_hints.append(t[:300])  # ambil 300 karakter pertama
-
+@app.get("/debug-api")
+async def debug_api(q: str):
+    PROVIDERS = "shortmax,dramabox,dramabite,dramawave,dramanova,netshort,reelshort,idrama,shortmax,melolo,starshort,goodshort,flextv,fundrama,microdrama,bilitv,vigloo,velolo,reelala,stardusttv,flickreels,reelife"
+    
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(
+                f"{BASE_DOMAIN}/search/providers/retry",
+                params={
+                    'q': q,
+                    'providers': PROVIDERS,
+                    'limit': 1000,
+                    'full_search': 1,
+                    'lang': 'id-ID'
+                },
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "Referer": f"{BASE_DOMAIN}/"
+                }
+            )
             return {
                 "status_code": resp.status_code,
                 "final_url": str(resp.url),
-                "total_cards_found": len(all_cards),
-                "raw_hrefs": raw_hrefs,
-                "import_count": sum(1 for h in raw_hrefs if h["is_import"]),
-                "local_count": sum(1 for h in raw_hrefs if not h["is_import"]),
-                "pager_html": pager_html,
-                "script_hints": script_hints[:3],  # max 3 script
-                "full_html": soup.prettify()  # 2000 karakter pertama HTML
+                "response_length": len(resp.text),
+                "content_type": resp.headers.get("content-type", ""),
+                "raw_preview": resp.text[:1000],  # 1000 karakter pertama
             }
-        except Exception as e:
-            return {"error": str(e)}
+    except Exception as e:
+        return {"error": str(e)}
