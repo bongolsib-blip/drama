@@ -208,150 +208,143 @@ async def scrape_search_results(q: str):
 
 async def scrape_full_search(q: str, page: int = 1):
     PROVIDERS = "shortmax,dramabox,dramabite,dramawave,dramanova,netshort,reelshort,idrama,shortmax,melolo,starshort,goodshort,flextv,fundrama,microdrama,bilitv,vigloo,velolo,reelala,stardusttv,flickreels,reelife"
-    
-    headers_html = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": f"{BASE_DOMAIN}/"
-    }
-    headers_api = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Referer": f"{BASE_DOMAIN}/"
-    }
 
-    async with httpx.AsyncClient(headers=headers_html, timeout=15.0, follow_redirects=True) as client:
-        
-        # ===========================
-        # FETCH KEDUANYA PARALEL 🔥
-        # ===========================
-        html_task = client.get(
-            f"{BASE_DOMAIN}/search",
-            params={'q': q, 'lang': 'id-ID', 'page': page}
-        )
-        api_task = client.get(
-            f"{BASE_DOMAIN}/search/providers/retry",
-            params={
-                'q': q,
-                'providers': PROVIDERS,
-                'limit': 1000,
-                'full_search': 1,
-                'lang': 'id-ID'
-            },
-            headers=headers_api
-        )
+    items = []
+    seen_titles = set()
 
-        try:
-            html_resp, api_resp = await asyncio.gather(html_task, api_task, return_exceptions=True)
-        except Exception as e:
-            return {"error": str(e), "items": []}
+    # ===========================
+    # FETCH HTML (drama lokal)
+    # ===========================
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            html_resp = await client.get(
+                f"{BASE_DOMAIN}/search",
+                params={'q': q, 'lang': 'id-ID', 'page': page},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": f"{BASE_DOMAIN}/"
+                }
+            )
 
-        items = []
-        seen_titles = set()  # untuk deduplikasi
+            if html_resp.status_code == 200:
+                soup = BeautifulSoup(html_resp.text, "html.parser")
+                for card in soup.find_all("article", class_="card"):
+                    title_tag = card.find("h3", class_="title")
+                    link_tag = card.find("a", class_="card-link-overlay")
+                    img_tag = card.find("img", class_="poster")
 
-        # ===========================
-        # PARSE HTML (drama lokal)
-        # ===========================
-        if not isinstance(html_resp, Exception) and html_resp.status_code == 200:
-            soup = BeautifulSoup(html_resp.text, "html.parser")
-
-            for card in soup.find_all("article", class_="card"):
-                title_tag = card.find("h3", class_="title")
-                link_tag = card.find("a", class_="card-link-overlay")
-                img_tag = card.find("img", class_="poster")
-
-                if not title_tag or not link_tag:
-                    continue
-
-                raw_href = link_tag.get("href", "")
-                title = title_tag.get_text(strip=True)
-
-                # Skip iklan
-                if not raw_href or "iklan" in title.lower():
-                    continue
-
-                clean_href = raw_href.split("?")[0]
-                slug = extract_slug(clean_href)
-                full_url = f"{BASE_DOMAIN}{clean_href}" if clean_href.startswith("/") else clean_href
-
-                thumb = img_tag.get("src") if img_tag else None
-                if thumb and thumb.startswith("/"):
-                    thumb = f"{BASE_DOMAIN}{thumb}"
-
-                title_key = title.lower().strip()
-                if title_key not in seen_titles:
-                    seen_titles.add(title_key)
-                    items.append({
-                        "title": title,
-                        "href": full_url,
-                        "slug": slug,
-                        "type": "local",
-                        "thumbnail": thumb,
-                        "status": card.find("div", class_="card-ep").get_text(strip=True) if card.find("div", class_="card-ep") else "",
-                        "tags": [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
-                    })
-
-        # ===========================
-        # PARSE API PROVIDERS (import)
-        # ===========================
-        # API tidak pakai pagination — hanya fetch di page 1
-        if page == 1 and not isinstance(api_resp, Exception) and api_resp.status_code == 200:
-            try:
-                api_data = api_resp.json()
-                api_items = api_data.get("items", [])
-
-                for item in api_items:
-                    title = item.get("title", "")
-                    title_key = title.lower().strip()
-
-                    # Skip duplikat dengan hasil HTML
-                    if title_key in seen_titles:
+                    if not title_tag or not link_tag:
                         continue
-                    seen_titles.add(title_key)
 
-                    original_url = item.get("url", "")
-                    poster = item.get("poster_url", "")
-                    if poster and poster.startswith("/"):
-                        poster = f"{BASE_DOMAIN}{poster}"
+                    raw_href = link_tag.get("href", "")
+                    title = title_tag.get_text(strip=True)
 
-                    # Bangun slug dari URL import
-                    parsed = urlparse(original_url)
-                    slug = f"import?{parsed.query}" if "/search/import" in original_url else extract_slug(original_url)
+                    if not raw_href or "iklan" in title.lower():
+                        continue
 
-                    items.append({
-                        "title": title,
-                        "href": original_url,
-                        "slug": slug,
-                        "type": "import",
-                        "thumbnail": poster,
-                        "status": "",
-                        "tags": item.get("tags", []),
-                        "description": item.get("description", ""),
-                        "relevance_score": item.get("relevance_score", 0)
-                    })
-            except Exception as e:
-                print(f"[search] API parse error: {e}")
+                    clean_href = raw_href.split("?")[0]
+                    slug = extract_slug(clean_href)
+                    full_url = f"{BASE_DOMAIN}{clean_href}" if clean_href.startswith("/") else clean_href
 
-        # ===========================
-        # SORT: lokal dulu, lalu import by relevance
-        # ===========================
-        local_items = [i for i in items if i["type"] == "local"]
-        import_items = sorted(
-            [i for i in items if i["type"] == "import"],
-            key=lambda x: x.get("relevance_score", 0),
-            reverse=True
-        )
-        final_items = local_items + import_items
+                    thumb = img_tag.get("src") if img_tag else None
+                    if thumb and thumb.startswith("/"):
+                        thumb = f"{BASE_DOMAIN}{thumb}"
 
-        return {
-            "query": q,
-            "current_page": page,
-            "has_next": False,  # tidak ada pagination
-            "count": len(final_items),
-            "local_count": len(local_items),
-            "import_count": len(import_items),
-            "items": final_items
-        }
+                    title_key = title.lower().strip()
+                    if title_key not in seen_titles:
+                        seen_titles.add(title_key)
+                        items.append({
+                            "title": title,
+                            "href": full_url,
+                            "slug": slug,
+                            "type": "local",
+                            "thumbnail": thumb,
+                            "status": card.find("div", class_="card-ep").get_text(strip=True) if card.find("div", class_="card-ep") else "",
+                            "tags": [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
+                        })
+    except Exception as e:
+        print(f"[search-html] Error: {e}")
+
+    # ===========================
+    # FETCH API PROVIDERS (hanya page 1)
+    # ===========================
+    if page == 1:
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                api_resp = await client.get(
+                    f"{BASE_DOMAIN}/search/providers/retry",
+                    params={
+                        'q': q,
+                        'providers': PROVIDERS,
+                        'limit': 1000,
+                        'full_search': 1,
+                        'lang': 'id-ID'
+                    },
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept": "application/json",
+                        "Referer": f"{BASE_DOMAIN}/"
+                    }
+                )
+
+                print(f"[search-api] status={api_resp.status_code} len={len(api_resp.text)}")
+
+                if api_resp.status_code == 200:
+                    api_data = api_resp.json()
+                    api_items = api_data.get("items", [])
+                    print(f"[search-api] got {len(api_items)} items from providers")
+
+                    for item in api_items:
+                        title = item.get("title", "")
+                        title_key = title.lower().strip()
+
+                        if title_key in seen_titles:
+                            continue
+                        seen_titles.add(title_key)
+
+                        original_url = item.get("url", "")
+                        poster = item.get("poster_url", "")
+                        if poster and poster.startswith("/"):
+                            poster = f"{BASE_DOMAIN}{poster}"
+
+                        parsed = urlparse(original_url)
+                        slug = f"import?{parsed.query}" if "/search/import" in original_url else extract_slug(original_url)
+
+                        items.append({
+                            "title": title,
+                            "href": original_url,
+                            "slug": slug,
+                            "type": "import",
+                            "thumbnail": poster,
+                            "status": "",
+                            "tags": item.get("tags", []),
+                            "description": item.get("description", ""),
+                            "relevance_score": item.get("relevance_score", 0)
+                        })
+        except Exception as e:
+            print(f"[search-api] Error: {e}")
+
+    # ===========================
+    # SORT & RETURN
+    # ===========================
+    local_items = [i for i in items if i["type"] == "local"]
+    import_items = sorted(
+        [i for i in items if i["type"] == "import"],
+        key=lambda x: x.get("relevance_score", 0),
+        reverse=True
+    )
+    final_items = local_items + import_items
+
+    return {
+        "query": q,
+        "current_page": page,
+        "has_next": False,
+        "count": len(final_items),
+        "local_count": len(local_items),
+        "import_count": len(import_items),
+        "items": final_items
+    }
 
 # =========================
 # RESOLVE IMPORT
