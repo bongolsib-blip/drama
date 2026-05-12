@@ -560,7 +560,6 @@ async def search_full(q: str, page: int = 1):
 
 @app.get("/check-import")
 async def check_import(request: Request):
-    # 🔥 Ambil raw query agar slug tidak terpotong di &
     raw_query = str(request.url.query)
     
     if raw_query.startswith("slug="):
@@ -574,18 +573,36 @@ async def check_import(request: Request):
     query_part = decoded_slug[len("import?"):]
     import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
     
-    print(f"[check-import] URL: {import_url}")
+    print(f"[check-import] Fetching: {import_url}")
 
     try:
-        resp = requests.get(import_url, headers=HEADERS, timeout=8, allow_redirects=True)
+        # 🔥 Pakai session agar cookie terbawa
+        session = requests.Session()
+        
+        # Visit halaman utama dulu untuk dapat cookie
+        session.get(BASE_DOMAIN, headers=HEADERS, timeout=8)
+        
+        # Baru akses import URL
+        resp = session.get(
+            import_url,
+            headers=HEADERS,
+            timeout=8,
+            allow_redirects=True
+        )
+        
         final_url = str(resp.url)
         print(f"[check-import] Final URL: {final_url}")
+        print(f"[check-import] Status: {resp.status_code}")
 
         if "/detail/watch/" in final_url:
-            return {"status": "success", "final_slug": extract_slug(final_url.split("?")[0])}
+            return {
+                "status": "success",
+                "final_slug": extract_slug(final_url.split("?")[0])
+            }
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
+        # Cek meta refresh
         meta_refresh = soup.find("meta", attrs={"http-equiv": "refresh"})
         if meta_refresh:
             content = meta_refresh.get("content", "")
@@ -595,21 +612,39 @@ async def check_import(request: Request):
                 if not redirect_url.startswith("http"):
                     redirect_url = BASE_DOMAIN + redirect_url
                 if "/detail/watch/" in redirect_url:
-                    return {"status": "success", "final_slug": extract_slug(redirect_url.split("?")[0])}
+                    return {
+                        "status": "success",
+                        "final_slug": extract_slug(redirect_url.split("?")[0])
+                    }
 
+        # Cek JS redirect
         for script in soup.find_all("script"):
             text = script.get_text()
-            match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
+            match = re.search(
+                r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']',
+                text
+            )
             if match and "/detail/watch/" in match.group(1):
-                return {"status": "success", "final_slug": extract_slug(match.group(1).split("?")[0])}
+                return {
+                    "status": "success",
+                    "final_slug": extract_slug(match.group(1).split("?")[0])
+                }
 
+        # Cek link langsung
         detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
         if detail_link:
-            return {"status": "success", "final_slug": extract_slug(detail_link["href"].split("?")[0])}
+            return {
+                "status": "success",
+                "final_slug": extract_slug(detail_link["href"].split("?")[0])
+            }
 
+        # 🔥 Debug: lihat HTML yang didapat
+        print(f"[check-import] HTML preview: {resp.text[:500]}")
+        
         return {"status": "pending", "final_slug": None}
 
     except Exception as e:
+        print(f"[check-import] Error: {e}")
         return {"status": "error", "message": str(e), "final_slug": None}
 
 
