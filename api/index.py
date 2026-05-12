@@ -420,27 +420,56 @@ def scrape_detail(slug: str):
 def get_video_src(slug: str, ep: int):
     key = f"{slug}_{ep}"
     now = time.time()
+
     if key in video_cache:
         cached = video_cache[key]
         if now - cached["time"] < VIDEO_CACHE_TTL:
             return cached["url"]
-    refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source?lang=id-ID&force=1"
+
+    refresh_url = (
+        f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source"
+        "?lang=id-ID&force=1"
+    )
+
     for _ in range(5):
         try:
-            resp = requests.get(refresh_url, headers=HEADERS, timeout=10)
+            resp = requests.get(
+                refresh_url,
+                headers=HEADERS,
+                timeout=10
+            )
+
             if resp.status_code == 200:
                 data = resp.json()
-                url = data.get("play_url")
-                if url:
-                    if "/stream/proxy?ah=narto-drama.com" in url:
-                        url = data.get("direct_play_url", url)
-                    video_cache[key] = {"url": url, "time": now}
-                    return url
-        except Exception:
-            pass
-        time.sleep(1.5)
-    return None
 
+                play_url = data.get("play_url")
+                direct_url = data.get("direct_play_url")
+
+                final_url = None
+
+                # ✅ PRIORITAS:
+                # pakai play_url dulu karena biasanya ada subtitle
+                if play_url:
+                    final_url = play_url
+
+                # 🔥 fallback kalau tidak ada
+                elif direct_url:
+                    final_url = direct_url
+
+                if final_url:
+                    video_cache[key] = {
+                        "url": final_url,
+                        "time": now
+                    }
+
+                    return final_url
+
+        except Exception as e:
+            print("get_video_src error:", e)
+
+        time.sleep(1.5)
+
+    return None
 def get_total_episodes(slug: str):
     url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID"
     resp = requests.get(url, headers=HEADERS, timeout=10)
