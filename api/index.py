@@ -558,11 +558,75 @@ async def search(q: str):
 async def search_full(q: str, page: int = 1):
     return await scrape_full_search(q, page)
 
+@app.get("/check-import")
+async def check_import(request: Request):
+    # 🔥 Ambil raw query agar slug tidak terpotong di &
+    raw_query = str(request.url.query)
+    
+    if raw_query.startswith("slug="):
+        decoded_slug = unquote(raw_query[len("slug="):])
+    else:
+        decoded_slug = unquote(request.query_params.get("slug", ""))
+
+    if not decoded_slug.startswith("import?"):
+        return {"status": "not_import", "final_slug": decoded_slug}
+
+    query_part = decoded_slug[len("import?"):]
+    import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
+    
+    print(f"[check-import] URL: {import_url}")
+
+    try:
+        resp = requests.get(import_url, headers=HEADERS, timeout=8, allow_redirects=True)
+        final_url = str(resp.url)
+        print(f"[check-import] Final URL: {final_url}")
+
+        if "/detail/watch/" in final_url:
+            return {"status": "success", "final_slug": extract_slug(final_url.split("?")[0])}
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        meta_refresh = soup.find("meta", attrs={"http-equiv": "refresh"})
+        if meta_refresh:
+            content = meta_refresh.get("content", "")
+            url_match = re.search(r'url=(.+)', content, re.IGNORECASE)
+            if url_match:
+                redirect_url = url_match.group(1).strip()
+                if not redirect_url.startswith("http"):
+                    redirect_url = BASE_DOMAIN + redirect_url
+                if "/detail/watch/" in redirect_url:
+                    return {"status": "success", "final_slug": extract_slug(redirect_url.split("?")[0])}
+
+        for script in soup.find_all("script"):
+            text = script.get_text()
+            match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
+            if match and "/detail/watch/" in match.group(1):
+                return {"status": "success", "final_slug": extract_slug(match.group(1).split("?")[0])}
+
+        detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
+        if detail_link:
+            return {"status": "success", "final_slug": extract_slug(detail_link["href"].split("?")[0])}
+
+        return {"status": "pending", "final_slug": None}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e), "final_slug": None}
+
+
+# Fix /resolve-import juga
 @app.get("/resolve-import")
-async def resolve_import_endpoint(slug: str = Query(...)):
-    decoded_slug = unquote(slug)
+async def resolve_import_endpoint(request: Request):
+    # 🔥 Sama — baca raw query
+    raw_query = str(request.url.query)
+    
+    if raw_query.startswith("slug="):
+        decoded_slug = unquote(raw_query[len("slug="):])
+    else:
+        decoded_slug = unquote(request.query_params.get("slug", ""))
+
     if not decoded_slug.startswith("import?"):
         return {"error": "Bukan import slug", "final_slug": decoded_slug}
+
     result = await resolve_import_internal(decoded_slug)
     if not result.get("final_slug"):
         return {"status": "failed", "message": "Import tidak selesai", "final_slug": None}
