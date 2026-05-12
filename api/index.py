@@ -36,6 +36,13 @@ HEADERS = {
     "Referer": BASE_DOMAIN
 }
 
+PROVIDERS = [
+    "shortmax", "dramabox", "dramabite", "dramawave", "dramanova",
+    "netshort", "reelshort", "idrama", "melolo", "starshort",
+    "goodshort", "flextv", "fundrama", "microdrama", "bilitv",
+    "vigloo", "velolo", "reelala", "stardusttv", "flickreels", "reelife"
+]
+
 video_cache = {}
 VIDEO_CACHE_TTL = 0
 
@@ -167,92 +174,9 @@ def scrape_list(url):
         return {"error": str(e)}
 
 # =========================
-# SEARCH
+# SEARCH HTML (lokal)
 # =========================
-async def scrape_search_results(q: str):
-    url = f"{BASE_DOMAIN}/search"
-    params = {'q': q, 'lang': 'id-ID'}
-    SEARCH_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"{BASE_DOMAIN}/",
-        "Accept": "application/json, text/javascript, */*; q=0.01"
-    }
-    async with httpx.AsyncClient(headers=SEARCH_HEADERS, timeout=15.0) as client:
-        try:
-            resp = await client.get(url, params=params)
-            if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                    raw_items = data.get("items", [])
-                    results = []
-                    for item in raw_items:
-                        original_url = item.get("url", "")
-                        poster = item.get("poster_url", "")
-                        if poster and poster.startswith("/"):
-                            poster = f"{BASE_DOMAIN}{poster}"
-                        results.append({
-                            "title": item.get("title", ""),
-                            "href": original_url,
-                            "slug": extract_slug(original_url),
-                            "thumbnail": poster,
-                            "description": item.get("description", ""),
-                            "tags": item.get("tags", [])
-                        })
-                    return {"status": "success", "count": len(results), "items": results}
-                except Exception:
-                    return {"error": "Format JSON tidak valid", "raw": resp.text[:500]}
-            return {"error": f"Server status {resp.status_code}", "items": []}
-        except Exception as e:
-            return {"error": str(e), "items": []}
-
-async def fetch_provider(client, q: str, provider: str):
-    try:
-        resp = await client.get(
-            f"{BASE_DOMAIN}/search/providers/retry",
-            params={
-                'q': q,
-                'providers': provider,  # 🔥 satu provider saja
-                'limit': 100,
-                'full_search': 1,
-                'lang': 'id-ID'
-            },
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": f"{BASE_DOMAIN}/search?q={q}&lang=id-ID",
-                "Origin": BASE_DOMAIN,
-            },
-            timeout=10.0
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            items = data.get("items", [])
-            failed = data.get("failed_providers", [])
-            print(f"[provider:{provider}] got {len(items)} items, failed={failed}")
-            return items
-        return []
-    except Exception as e:
-        print(f"[provider:{provider}] error: {e}")
-        return []
-
-
-async def scrape_full_search(q: str, page: int = 1):
-    PROVIDERS = [
-        "shortmax", "dramabox", "dramabite", "dramawave", "dramanova",
-        "netshort", "reelshort", "idrama", "melolo", "starshort",
-        "goodshort", "flextv", "fundrama", "microdrama", "bilitv",
-        "vigloo", "velolo", "reelala", "stardusttv", "flickreels", "reelife"
-    ]
-
-    items = []
-    seen_titles = set()
-
-    # ===========================
-    # FETCH HTML (drama lokal)
-    # ===========================
+async def scrape_local_search(q: str, page: int = 1):
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             html_resp = await client.get(
@@ -264,135 +188,214 @@ async def scrape_full_search(q: str, page: int = 1):
                     "Referer": f"{BASE_DOMAIN}/"
                 }
             )
-            if html_resp.status_code == 200:
-                soup = BeautifulSoup(html_resp.text, "html.parser")
-                for card in soup.find_all("article", class_="card"):
-                    title_tag = card.find("h3", class_="title")
-                    link_tag = card.find("a", class_="card-link-overlay")
-                    img_tag = card.find("img", class_="poster")
+            if html_resp.status_code != 200:
+                return []
 
-                    if not title_tag or not link_tag:
-                        continue
+            soup = BeautifulSoup(html_resp.text, "html.parser")
+            items = []
 
-                    raw_href = link_tag.get("href", "")
-                    title = title_tag.get_text(strip=True)
+            for card in soup.find_all("article", class_="card"):
+                title_tag = card.find("h3", class_="title")
+                link_tag = card.find("a", class_="card-link-overlay")
+                img_tag = card.find("img", class_="poster")
 
-                    if not raw_href or "iklan" in title.lower():
-                        continue
-
-                    clean_href = raw_href.split("?")[0]
-                    slug = extract_slug(clean_href)
-                    full_url = f"{BASE_DOMAIN}{clean_href}" if clean_href.startswith("/") else clean_href
-
-                    thumb = img_tag.get("src") if img_tag else None
-                    if thumb and thumb.startswith("/"):
-                        thumb = f"{BASE_DOMAIN}{thumb}"
-
-                    title_key = title.lower().strip()
-                    if title_key not in seen_titles:
-                        seen_titles.add(title_key)
-                        items.append({
-                            "title": title,
-                            "href": full_url,
-                            "slug": slug,
-                            "type": "local",
-                            "thumbnail": thumb,
-                            "status": card.find("div", class_="card-ep").get_text(strip=True) if card.find("div", class_="card-ep") else "",
-                            "tags": [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
-                        })
-    except Exception as e:
-        print(f"[search-html] Error: {e}")
-
-    # ===========================
-    # FETCH PROVIDERS SATU-SATU
-    # hanya di page 1, dengan concurrency max 3
-    # ===========================
-    if page == 1:
-        semaphore = asyncio.Semaphore(3)  # max 3 provider paralel sekaligus
-
-        async def fetch_with_semaphore(client, provider):
-            async with semaphore:
-                result = await fetch_provider(client, q, provider)
-                await asyncio.sleep(0.3)  # jeda kecil antar provider
-                return result
-
-        try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                tasks = [fetch_with_semaphore(client, p) for p in PROVIDERS]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for provider_items in results:
-                if isinstance(provider_items, Exception) or not provider_items:
+                if not title_tag or not link_tag:
                     continue
 
-                for item in provider_items:
-                    title = item.get("title", "")
-                    title_key = title.lower().strip()
+                raw_href = link_tag.get("href", "")
+                title = title_tag.get_text(strip=True)
 
-                    if title_key in seen_titles:
-                        continue
+                if not raw_href or "iklan" in title.lower():
+                    continue
+
+                clean_href = raw_href.split("?")[0]
+                slug = extract_slug(clean_href)
+                full_url = f"{BASE_DOMAIN}{clean_href}" if clean_href.startswith("/") else clean_href
+
+                thumb = img_tag.get("src") if img_tag else None
+                if thumb and thumb.startswith("/"):
+                    thumb = f"{BASE_DOMAIN}{thumb}"
+
+                items.append({
+                    "title": title,
+                    "href": full_url,
+                    "slug": slug,
+                    "type": "local",
+                    "thumbnail": thumb,
+                    "status": card.find("div", class_="card-ep").get_text(strip=True) if card.find("div", class_="card-ep") else "",
+                    "tags": [t.get_text(strip=True) for t in card.find_all("a", class_="movie-tag")]
+                })
+
+            return items
+    except Exception as e:
+        print(f"[search-html] Error: {e}")
+        return []
+
+# =========================
+# FETCH SATU PROVIDER
+# =========================
+async def fetch_one_provider(q: str, provider: str):
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(
+                f"{BASE_DOMAIN}/search/providers/retry",
+                params={
+                    'q': q,
+                    'providers': provider,
+                    'limit': 100,
+                    'full_search': 1,
+                    'lang': 'id-ID'
+                },
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": f"{BASE_DOMAIN}/search?q={q}&lang=id-ID",
+                    "Origin": BASE_DOMAIN,
+                }
+            )
+            if resp.status_code != 200:
+                return []
+
+            data = resp.json()
+            raw_items = data.get("items", [])
+
+            results = []
+            for item in raw_items:
+                # 🔥 Filter hanya bahasa Indonesia
+                lang = item.get("language_code", "")
+                if lang and lang.lower() not in ("id-id", "id"):
+                    continue
+
+                original_url = item.get("url", "")
+                poster = item.get("poster_url", "")
+                if poster and poster.startswith("/"):
+                    poster = f"{BASE_DOMAIN}{poster}"
+
+                parsed = urlparse(original_url)
+                slug = f"import?{parsed.query}" if "/search/import" in original_url else extract_slug(original_url)
+
+                results.append({
+                    "title": item.get("title", ""),
+                    "href": original_url,
+                    "slug": slug,
+                    "type": "import",
+                    "thumbnail": poster,
+                    "status": "",
+                    "tags": item.get("tags", []),
+                    "description": item.get("description", ""),
+                    "relevance_score": item.get("relevance_score", 0),
+                    "provider": provider,
+                    "language_code": lang
+                })
+
+            return results
+    except Exception as e:
+        print(f"[provider:{provider}] error: {e}")
+        return []
+
+# =========================
+# SEARCH FULL (HTML + providers)
+# =========================
+async def scrape_full_search(q: str, page: int = 1):
+    seen_titles = set()
+    items = []
+
+    # HTML lokal dulu
+    local_items = await scrape_local_search(q, page)
+    for item in local_items:
+        title_key = item["title"].lower().strip()
+        if title_key not in seen_titles:
+            seen_titles.add(title_key)
+            items.append(item)
+
+    # Provider satu-satu hanya di page 1
+    if page == 1:
+        semaphore = asyncio.Semaphore(3)
+
+        async def fetch_with_sem(provider):
+            async with semaphore:
+                result = await fetch_one_provider(q, provider)
+                await asyncio.sleep(0.2)
+                return result
+
+        tasks = [fetch_with_sem(p) for p in PROVIDERS]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for provider_items in results:
+            if isinstance(provider_items, Exception) or not provider_items:
+                continue
+            for item in provider_items:
+                title_key = item["title"].lower().strip()
+                if title_key not in seen_titles:
                     seen_titles.add(title_key)
+                    items.append(item)
 
-                    original_url = item.get("url", "")
-                    poster = item.get("poster_url", "")
-                    if poster and poster.startswith("/"):
-                        poster = f"{BASE_DOMAIN}{poster}"
-
-                    parsed = urlparse(original_url)
-                    slug = f"import?{parsed.query}" if "/search/import" in original_url else extract_slug(original_url)
-
-                    items.append({
-                        "title": title,
-                        "href": original_url,
-                        "slug": slug,
-                        "type": "import",
-                        "thumbnail": poster,
-                        "status": "",
-                        "tags": item.get("tags", []),
-                        "description": item.get("description", ""),
-                        "relevance_score": item.get("relevance_score", 0)
-                    })
-        except Exception as e:
-            print(f"[search-providers] Error: {e}")
-
-    # ===========================
-    # SORT & RETURN
-    # ===========================
-    local_items = [i for i in items if i["type"] == "local"]
-    import_items = sorted(
+    local_items_final = [i for i in items if i["type"] == "local"]
+    import_items_final = sorted(
         [i for i in items if i["type"] == "import"],
         key=lambda x: x.get("relevance_score", 0),
         reverse=True
     )
-    final_items = local_items + import_items
 
     return {
         "query": q,
         "current_page": page,
         "has_next": False,
-        "count": len(final_items),
-        "local_count": len(local_items),
-        "import_count": len(import_items),
-        "items": final_items
+        "count": len(items),
+        "local_count": len(local_items_final),
+        "import_count": len(import_items_final),
+        "items": local_items_final + import_items_final
     }
 
 # =========================
-# RESOLVE IMPORT
+# ENDPOINT BARU: search per provider (untuk streaming di frontend)
+# =========================
+@app.get("/search-provider")
+async def search_provider(q: str, provider: str):
+    """Fetch satu provider — dipanggil frontend satu per satu agar bisa tampil bertahap"""
+    items = await fetch_one_provider(q, provider)
+    return {
+        "provider": provider,
+        "count": len(items),
+        "items": items
+    }
+
+@app.get("/search-local")
+async def search_local(q: str, page: int = 1):
+    """Fetch drama lokal dari HTML scrape"""
+    items = await scrape_local_search(q, page)
+    return {
+        "query": q,
+        "count": len(items),
+        "items": items
+    }
+
+# =========================
+# RESOLVE IMPORT — dengan retry lebih agresif
 # =========================
 async def resolve_import_internal(slug: str):
     decoded_slug = unquote(slug)
     if not decoded_slug.startswith("import?"):
         return {"final_slug": decoded_slug}
+
     query_part = decoded_slug[len("import?"):]
     import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
-    for attempt in range(10):
+
+    for attempt in range(5):  # kurangi dari 10 → 5 agar tidak timeout
         try:
-            resp = requests.get(import_url, headers=HEADERS, timeout=15, allow_redirects=True)
+            resp = requests.get(import_url, headers=HEADERS, timeout=10, allow_redirects=True)
             final_url = str(resp.url)
             print(f"[resolve-import] Attempt {attempt+1}: {final_url}")
+
+            # 🔥 Berhasil redirect ke detail
             if "/detail/watch/" in final_url:
                 return {"final_slug": extract_slug(final_url.split("?")[0])}
+
             soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Cek meta refresh
             meta_refresh = soup.find("meta", attrs={"http-equiv": "refresh"})
             if meta_refresh:
                 content = meta_refresh.get("content", "")
@@ -403,18 +406,37 @@ async def resolve_import_internal(slug: str):
                         redirect_url = BASE_DOMAIN + redirect_url
                     if "/detail/watch/" in redirect_url:
                         return {"final_slug": extract_slug(redirect_url.split("?")[0])}
+
+            # Cek JS redirect
             for script in soup.find_all("script"):
                 text = script.get_text()
                 match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
                 if match and "/detail/watch/" in match.group(1):
                     return {"final_slug": extract_slug(match.group(1).split("?")[0])}
+
+            # Cek link langsung
             detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
             if detail_link:
                 return {"final_slug": extract_slug(detail_link["href"].split("?")[0])}
-            time.sleep(2)
+
+            # 🔥 Cek apakah ada data drama di JSON dalam halaman
+            json_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?});', resp.text, re.DOTALL)
+            if json_match:
+                try:
+                    state = json.loads(json_match.group(1))
+                    slug_from_state = state.get("slug") or state.get("drama", {}).get("slug")
+                    if slug_from_state:
+                        return {"final_slug": slug_from_state}
+                except:
+                    pass
+
+            print(f"[resolve-import] Belum selesai, retry {attempt+1}/5...")
+            time.sleep(1.5)
+
         except Exception as e:
             print(f"[resolve-import] Error: {e}")
-            time.sleep(2)
+            time.sleep(1.5)
+
     return {"final_slug": None}
 
 # =========================
@@ -529,7 +551,8 @@ def list_all(max_page: int = 5, delay: float = 1):
 
 @app.get("/search")
 async def search(q: str):
-    return await scrape_search_results(q)
+    items = await scrape_local_search(q)
+    return {"status": "success", "count": len(items), "items": items}
 
 @app.get("/search-full")
 async def search_full(q: str, page: int = 1):
@@ -552,15 +575,35 @@ async def detail(request: Request):
         full_slug = unquote(raw_query[len("slug="):])
     else:
         full_slug = request.query_params.get("slug", "")
+
     if full_slug.startswith("import?") or full_slug == "import":
         resolve_result = await resolve_import_internal(full_slug)
         if not resolve_result.get("final_slug"):
-            return {"slug": full_slug, "final_slug": None, "was_imported": True, "import_status": "failed", "data": {"error": "Gagal import drama"}}
+            return {
+                "slug": full_slug,
+                "final_slug": None,
+                "was_imported": True,
+                "import_status": "failed",
+                "data": {"error": "Gagal import drama"}
+            }
         final_slug = resolve_result["final_slug"]
         data = scrape_detail(final_slug)
-        return {"slug": full_slug, "final_slug": final_slug, "was_imported": True, "import_status": "success", "data": data}
+        return {
+            "slug": full_slug,
+            "final_slug": final_slug,
+            "was_imported": True,
+            "import_status": "success",
+            "data": data
+        }
+
     data = scrape_detail(full_slug)
-    return {"slug": full_slug, "final_slug": data.get("final_slug", full_slug), "was_imported": False, "import_status": "not_needed", "data": data}
+    return {
+        "slug": full_slug,
+        "final_slug": data.get("final_slug", full_slug),
+        "was_imported": False,
+        "import_status": "not_needed",
+        "data": data
+    }
 
 @app.get("/episodes")
 async def episodes(request: Request):
@@ -599,26 +642,21 @@ async def video(request: Request, ep: int = 1):
 @app.get("/stream")
 async def stream(request: Request, url: str):
     decoded_url = unquote(unquote(url))
-
     fetch_headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": BASE_DOMAIN,
         "Origin": BASE_DOMAIN,
         "Accept": "*/*",
     }
-
     range_header = request.headers.get("range")
     if range_header:
         fetch_headers["Range"] = range_header
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
-
-        # HLS .m3u8 → rewrite semua segment URL lewat proxy
         if ".m3u8" in decoded_url:
             resp = await client.get(decoded_url, headers=fetch_headers)
             text = resp.text
             base_url = decoded_url.rsplit("/", 1)[0] + "/"
-
             rewritten_lines = []
             for line in text.splitlines():
                 stripped = line.strip()
@@ -628,14 +666,12 @@ async def stream(request: Request, url: str):
                     rewritten_lines.append(proxied)
                 else:
                     rewritten_lines.append(line)
-
             return Response(
                 content="\n".join(rewritten_lines),
                 media_type="application/vnd.apple.mpegurl",
                 headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"}
             )
 
-        # MP4 / .ts segment → stream langsung
         async with client.stream("GET", decoded_url, headers=fetch_headers) as r:
             response_headers = {
                 "Content-Type": r.headers.get("content-type", "video/mp4"),
@@ -647,7 +683,6 @@ async def stream(request: Request, url: str):
                 response_headers["Content-Length"] = r.headers["content-length"]
             if "content-range" in r.headers:
                 response_headers["Content-Range"] = r.headers["content-range"]
-
             return StreamingResponse(
                 r.aiter_bytes(chunk_size=1024 * 512),
                 status_code=r.status_code,
@@ -679,34 +714,36 @@ def filter_api(genre: str = None, keyword: str = None, page: int = 1, limit: int
     start = (page - 1) * limit
     end = start + limit
     return {"total": len(data), "page": page, "results": data[start:end]}
-    
-@app.get("/debug-api")
-async def debug_api(q: str):
-    PROVIDERS = "shortmax,dramabox,dramabite,dramawave,dramanova,netshort,reelshort,idrama,shortmax,melolo,starshort,goodshort,flextv,fundrama,microdrama,bilitv,vigloo,velolo,reelala,stardusttv,flickreels,reelife"
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(
-                f"{BASE_DOMAIN}/search/providers/retry",
-                params={
-                    'q': q,
-                    'providers': PROVIDERS,
-                    'limit': 1000,
-                    'full_search': 1,
-                    'lang': 'id-ID'
-                },
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "application/json",
-                    "Referer": f"{BASE_DOMAIN}/"
-                }
-            )
+
+@app.get("/debug-search")
+async def debug_search(q: str, page: int = 1):
+    url = f"{BASE_DOMAIN}/search"
+    params = {'q': q, 'lang': 'id-ID', 'page': page}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": f"{BASE_DOMAIN}/"
+    }
+    async with httpx.AsyncClient(headers=headers, timeout=15.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(url, params=params)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            all_cards = soup.find_all("article", class_="card")
+            raw_hrefs = []
+            for card in all_cards:
+                link = card.find("a", class_="card-link-overlay")
+                title = card.find("h3", class_="title")
+                raw_hrefs.append({
+                    "title": title.get_text(strip=True) if title else "",
+                    "href": link.get("href", "") if link else "",
+                    "is_import": "/search/import" in (link.get("href", "") if link else "")
+                })
+            pager = soup.find("div", class_="pager")
             return {
                 "status_code": resp.status_code,
-                "final_url": str(resp.url),
-                "response_length": len(resp.text),
-                "content_type": resp.headers.get("content-type", ""),
-                "raw_preview": resp.text[:1000],  # 1000 karakter pertama
+                "total_cards_found": len(all_cards),
+                "raw_hrefs": raw_hrefs,
+                "pager_html": str(pager) if pager else "TIDAK ADA PAGER",
             }
-    except Exception as e:
-        return {"error": str(e)}
+        except Exception as e:
+            return {"error": str(e)}
