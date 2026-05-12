@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from mangum import Mangum
 from fastapi.responses import Response, StreamingResponse
-from urllib.parse import quote
+from urllib.parse import urljoin, quote
 import requests
 from bs4 import BeautifulSoup
 import re
