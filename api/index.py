@@ -2,6 +2,8 @@ from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from mangum import Mangum
+from fastapi.responses import Response, StreamingResponse
+from urllib.parse import quote
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -1072,3 +1074,64 @@ async def poll_import(task_id: str):
             "status": "error",
             "message": str(e)
         }
+@app.get("/proxy-hls")
+def proxy_hls(url: str):
+
+    headers = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Referer": "https://narto-drama.com/",
+        "Origin": "https://narto-drama.com"
+    }
+
+    r = requests.get(url, headers=headers, timeout=15)
+
+    content = r.text
+
+    base = url.rsplit("/", 1)[0]
+
+    lines = []
+
+    for line in content.splitlines():
+
+        if line.startswith("#") or not line.strip():
+            lines.append(line)
+            continue
+
+        if line.startswith("http"):
+            segment_url = line
+        else:
+            segment_url = f"{base}/{line}"
+
+        proxied = (
+            "https://drama-liart.vercel.app/proxy-segment?"
+            f"url={quote(segment_url, safe='')}"
+        )
+
+        lines.append(proxied)
+
+    return Response(
+        "\n".join(lines),
+        media_type="application/vnd.apple.mpegurl"
+    )
+
+@app.get("/proxy-segment")
+def proxy_segment(url: str):
+
+    headers = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Referer": "https://narto-drama.com/",
+        "Origin": "https://narto-drama.com"
+    }
+
+    r = requests.get(
+        url,
+        headers=headers,
+        stream=True,
+        timeout=20
+    )
+
+    return StreamingResponse(
+        r.iter_content(chunk_size=8192),
+        media_type=r.headers.get("content-type", "video/mp2t")
+    )
+
