@@ -1076,70 +1076,57 @@ async def poll_import(task_id: str):
         }
 @app.get("/proxy-hls")
 async def proxy_hls(url: str):
-    try:
-        resp = requests.get(
-            url,
-            headers={
-                "User-Agent": HEADERS["User-Agent"],
-                "Referer": BASE_DOMAIN,
-                "Origin": BASE_DOMAIN,
-            },
-            timeout=15
-        )
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": url,
+        "Origin": url.split("/")[0] + "//" + url.split("/")[2],
+    }
 
-        content_type = resp.headers.get("content-type", "")
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        r = await client.get(url, headers=headers)
 
-        # =========================
-        # HANDLE M3U8
-        # =========================
-        if ".m3u8" in url or "mpegurl" in content_type:
-            text = resp.text
+    content_type = r.headers.get(
+        "content-type",
+        "application/vnd.apple.mpegurl"
+    )
 
-            base_url = url.rsplit("/", 1)[0] + "/"
+    text = r.text
 
-            new_lines = []
+    # rewrite semua line playlist
+    new_lines = []
 
-            for line in text.splitlines():
+    for line in text.splitlines():
 
-                # comment HLS
-                if line.startswith("#") or not line.strip():
-                    new_lines.append(line)
-                    continue
+        line = line.strip()
 
-                # absolute URL
-                if line.startswith("http"):
-                    absolute = line
-                else:
-                    absolute = urljoin(base_url, line)
+        # comment HLS
+        if line.startswith("#") or not line:
+            new_lines.append(line)
+            continue
 
-                # lewat proxy lagi
-                proxied = f"/proxy-hls?url={quote(absolute, safe='')}"
+        # absolute url
+        if line.startswith("http"):
+            proxied = f"/proxy-hls?url={quote(line, safe='')}"
+            new_lines.append(proxied)
 
-                new_lines.append(proxied)
+        else:
+            # relative path
+            absolute = urljoin(url, line)
 
-            return Response(
-                "\n".join(new_lines),
-                media_type="application/vnd.apple.mpegurl",
-                headers={
-                    "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "no-cache",
-                }
-            )
+            proxied = f"/proxy-hls?url={quote(absolute, safe='')}"
 
-        # =========================
-        # HANDLE TS / AAC / MP4
-        # =========================
-        return Response(
-            resp.content,
-            media_type=content_type,
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "public, max-age=3600",
-            }
-        )
+            new_lines.append(proxied)
 
-    except Exception as e:
-        return {"error": str(e)}
+    fixed_playlist = "\n".join(new_lines)
+
+    return Response(
+        content=fixed_playlist,
+        media_type=content_type,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-cache",
+        }
+    )
 
 @app.get("/proxy-segment")
 def proxy_segment(url: str):
