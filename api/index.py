@@ -1086,11 +1086,25 @@ async def proxy_hls(url: str):
     async with httpx.AsyncClient(follow_redirects=True) as client:
         r = await client.get(url, headers=headers)
 
-    content_type = r.headers.get(
-        "content-type",
-        "application/vnd.apple.mpegurl"
-    )
+    content_type = r.headers.get("content-type", "")
 
+    # ==================================================
+    # BINARY FILE (ts, m4s, mp4, aac)
+    # ==================================================
+    if ".m3u8" not in url:
+
+        return Response(
+            content=r.content,
+            media_type=content_type,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+            }
+        )
+
+    # ==================================================
+    # PLAYLIST M3U8
+    # ==================================================
     text = r.text
 
     new_lines = []
@@ -1099,9 +1113,7 @@ async def proxy_hls(url: str):
 
         line = line.strip()
 
-        # ==========================================
-        # REWRITE URI="..."
-        # ==========================================
+        # rewrite URI="..."
         if 'URI="' in line:
 
             def replace_uri(match):
@@ -1125,16 +1137,12 @@ async def proxy_hls(url: str):
             new_lines.append(line)
             continue
 
-        # ==========================================
-        # COMMENT HLS
-        # ==========================================
+        # comment
         if line.startswith("#") or not line:
             new_lines.append(line)
             continue
 
-        # ==========================================
-        # URL ABSOLUTE
-        # ==========================================
+        # absolute
         if line.startswith("http"):
 
             proxied = (
@@ -1144,9 +1152,7 @@ async def proxy_hls(url: str):
 
             new_lines.append(proxied)
 
-        # ==========================================
-        # URL RELATIVE
-        # ==========================================
+        # relative
         else:
 
             absolute = urljoin(url, line)
@@ -1162,7 +1168,7 @@ async def proxy_hls(url: str):
 
     return Response(
         content=fixed_playlist,
-        media_type=content_type,
+        media_type="application/vnd.apple.mpegurl",
         headers={
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "no-cache",
