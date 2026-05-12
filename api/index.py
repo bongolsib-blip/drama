@@ -956,7 +956,7 @@ async def start_import(request: Request):
             "message": str(e)
         }
 
-@app.post("/poll-import")
+@app.get("/poll-import")
 async def poll_import(request: Request, task_id: str):
 
     print("\n================ POLL IMPORT ================")
