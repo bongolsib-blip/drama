@@ -1076,6 +1076,7 @@ async def poll_import(task_id: str):
         }
 @app.get("/proxy-hls")
 async def proxy_hls(url: str):
+
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": url,
@@ -1092,28 +1093,68 @@ async def proxy_hls(url: str):
 
     text = r.text
 
-    # rewrite semua line playlist
     new_lines = []
 
     for line in text.splitlines():
 
         line = line.strip()
 
-        # comment HLS
+        # ==========================================
+        # REWRITE URI="..."
+        # ==========================================
+        if 'URI="' in line:
+
+            def replace_uri(match):
+                original = match.group(1)
+
+                absolute = urljoin(url, original)
+
+                proxied = (
+                    f'/proxy-hls?url='
+                    f'{quote(absolute, safe="")}'
+                )
+
+                return f'URI="{proxied}"'
+
+            line = re.sub(
+                r'URI="([^"]+)"',
+                replace_uri,
+                line
+            )
+
+            new_lines.append(line)
+            continue
+
+        # ==========================================
+        # COMMENT HLS
+        # ==========================================
         if line.startswith("#") or not line:
             new_lines.append(line)
             continue
 
-        # absolute url
+        # ==========================================
+        # URL ABSOLUTE
+        # ==========================================
         if line.startswith("http"):
-            proxied = f"/proxy-hls?url={quote(line, safe='')}"
+
+            proxied = (
+                f'/proxy-hls?url='
+                f'{quote(line, safe="")}'
+            )
+
             new_lines.append(proxied)
 
+        # ==========================================
+        # URL RELATIVE
+        # ==========================================
         else:
-            # relative path
+
             absolute = urljoin(url, line)
 
-            proxied = f"/proxy-hls?url={quote(absolute, safe='')}"
+            proxied = (
+                f'/proxy-hls?url='
+                f'{quote(absolute, safe="")}'
+            )
 
             new_lines.append(proxied)
 
