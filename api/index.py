@@ -892,3 +892,101 @@ async def debug_search(q: str, page: int = 1):
             }
         except Exception as e:
             return {"error": str(e)}
+
+# Simpan task_id sementara di memory
+import_tasks = {}  # {slug_key: task_id}
+
+@app.get("/start-import")
+async def start_import(request: Request):
+    """Trigger import dan return task_id — dipanggil sekali oleh frontend"""
+    raw_query = str(request.url.query)
+    if raw_query.startswith("slug="):
+        decoded_slug = unquote(raw_query[len("slug="):])
+    else:
+        decoded_slug = unquote(request.query_params.get("slug", ""))
+
+    if not decoded_slug.startswith("import?"):
+        return {"status": "not_import", "final_slug": decoded_slug}
+
+    query_part = decoded_slug[len("import?"):]
+    import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
+
+    try:
+        session = requests.Session()
+        session.get(BASE_DOMAIN, headers=HEADERS, timeout=8)
+        resp = session.get(import_url, headers=HEADERS, timeout=8, allow_redirects=False)
+
+        # Cek redirect langsung
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("location", "")
+            if "/detail/watch/" in location:
+                return {"status": "success", "final_slug": extract_slug(location.split("?")[0])}
+
+        # Cari task_id
+        soup = BeautifulSoup(resp.text, "html.parser")
+        task_id = None
+
+        for script in soup.find_all("script"):
+            text = script.get_text()
+            match = re.search(r'["\']([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})["\']', text)
+            if match:
+                task_id = match.group(1)
+                break
+
+        if not task_id:
+            return {"status": "error", "message": "task_id tidak ditemukan"}
+
+        # Simpan cookies session untuk polling berikutnya
+        cookies = dict(session.cookies)
+        import_tasks[decoded_slug] = {
+            "task_id": task_id,
+            "cookies": cookies
+        }
+
+        return {"status": "pending", "task_id": task_id}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/poll-import")
+async def poll_import(task_id: str):
+    """Cek status import sekali — frontend panggil berulang kali"""
+    try:
+        status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
+        resp = requests.get(status_url, headers=HEADERS, timeout=8)
+
+        if resp.status_code != 200:
+            return {"status": "error", "message": f"HTTP {resp.status_code}"}
+
+        data = resp.json()
+        print(f"[poll-import] {data}")
+
+        status = data.get("status", "").lower()
+        redirect_url = data.get("redirect_url", "")
+
+        # Selesai — ada redirect_url
+        if redirect_url and "/detail/watch/" in redirect_url:
+            return {
+                "status": "success",
+                "final_slug": extract_slug(redirect_url.split("?")[0]),
+                "message": data.get("message", "")
+            }
+
+        # Selesai dengan status done
+        if status in ("done", "complete", "success", "finished"):
+            # Cari slug di semua field
+            for val in data.values():
+                if isinstance(val, str) and "/detail/watch/" in val:
+                    return {"status": "success", "final_slug": extract_slug(val.split("?")[0])}
+            return {"status": "success_unknown", "raw": data}
+
+        # Masih processing
+        return {
+            "status": "processing",
+            "message": data.get("message", ""),
+            "progress": f"{data.get('progress_current', 0)}/{data.get('progress_total', 0)}"
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
