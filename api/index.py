@@ -880,41 +880,103 @@ async def start_import(request: Request):
 @app.get("/poll-import")
 async def poll_import(task_id: str):
     """Cek status import sekali — frontend panggil berulang kali"""
+
     try:
-        status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
-        resp = requests.get(status_url, headers=HEADERS, timeout=8)
+        # 🔥 Cari cookies berdasarkan task_id
+        cookies = None
 
-        if resp.status_code != 200:
-            return {"status": "error", "message": f"HTTP {resp.status_code}"}
+        for data in import_tasks.values():
+            if data.get("task_id") == task_id:
+                cookies = data.get("cookies")
+                break
 
-        data = resp.json()
-        print(f"[poll-import] {data}")
-
-        status = data.get("status", "").lower()
-        redirect_url = data.get("redirect_url", "")
-
-        # Selesai — ada redirect_url
-        if redirect_url and "/detail/watch/" in redirect_url:
+        if not cookies:
             return {
-                "status": "success",
-                "final_slug": extract_slug(redirect_url.split("?")[0]),
-                "message": data.get("message", "")
+                "status": "error",
+                "message": "session cookies tidak ditemukan"
             }
 
-        # Selesai dengan status done
+        status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
+
+        session = requests.Session()
+
+        resp = session.get(
+            status_url,
+            headers=HEADERS,
+            cookies=cookies,
+            timeout=15
+        )
+
+        print(f"[poll-import] status={resp.status_code}")
+        print(f"[poll-import] body={resp.text[:500]}")
+
+        if resp.status_code != 200:
+            return {
+                "status": "error",
+                "message": f"HTTP {resp.status_code}"
+            }
+
+        data = resp.json()
+
+        status = str(data.get("status", "")).lower()
+
+        # 🔥 Cari URL detail dari semua kemungkinan field
+        possible_fields = [
+            "redirect_url",
+            "url",
+            "watch_url",
+            "drama_url"
+        ]
+
+        for field in possible_fields:
+            val = data.get(field)
+
+            if isinstance(val, str) and "/detail/watch/" in val:
+                return {
+                    "status": "success",
+                    "final_slug": extract_slug(val.split("?")[0])
+                }
+
+        # 🔥 Cari slug langsung
+        slug_val = (
+            data.get("slug")
+            or data.get("drama_slug")
+        )
+
+        if slug_val:
+            return {
+                "status": "success",
+                "final_slug": slug_val
+            }
+
+        # 🔥 Kalau status done tapi URL belum ada
         if status in ("done", "complete", "success", "finished"):
-            # Cari slug di semua field
+
+            # scan semua value
             for val in data.values():
                 if isinstance(val, str) and "/detail/watch/" in val:
-                    return {"status": "success", "final_slug": extract_slug(val.split("?")[0])}
-            return {"status": "success_unknown", "raw": data}
+                    return {
+                        "status": "success",
+                        "final_slug": extract_slug(val.split("?")[0])
+                    }
 
-        # Masih processing
+            return {
+                "status": "success_unknown",
+                "raw": data
+            }
+
+        # 🔥 Masih processing
         return {
             "status": "processing",
             "message": data.get("message", ""),
-            "progress": f"{data.get('progress_current', 0)}/{data.get('progress_total', 0)}"
+            "progress": f"{data.get('progress_current', 0)}/{data.get('progress_total', 0)}",
+            "raw": data
         }
 
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print(f"[poll-import] ERROR: {e}")
+
+        return {
+            "status": "error",
+            "message": str(e)
+        }
