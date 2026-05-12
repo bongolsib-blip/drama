@@ -826,77 +826,156 @@ resolved_cache = {}
 
 @app.get("/start-import")
 async def start_import(request: Request):
-    """Trigger import dan return task_id — dipanggil sekali oleh frontend"""
+
+    print("\n================ START IMPORT ================")
+
     raw_query = str(request.url.query)
+    print(f"[start-import] raw_query={raw_query}")
+
     if raw_query.startswith("slug="):
         decoded_slug = unquote(raw_query[len("slug="):])
     else:
         decoded_slug = unquote(request.query_params.get("slug", ""))
 
+    print(f"[start-import] decoded_slug={decoded_slug}")
+
     if not decoded_slug.startswith("import?"):
-        return {"status": "not_import", "final_slug": decoded_slug}
+        print("[start-import] bukan import slug")
+
+        return {
+            "status": "not_import",
+            "final_slug": decoded_slug
+        }
 
     query_part = decoded_slug[len("import?"):]
     import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
 
+    print(f"[start-import] import_url={import_url}")
+
     try:
         session = requests.Session()
-        session.get(BASE_DOMAIN, headers=HEADERS, timeout=8)
-        resp = session.get(import_url, headers=HEADERS, timeout=8, allow_redirects=False)
 
-        # Cek redirect langsung
+        home_resp = session.get(
+            BASE_DOMAIN,
+            headers=HEADERS,
+            timeout=10
+        )
+
+        print(f"[start-import] home status={home_resp.status_code}")
+
+        resp = session.get(
+            import_url,
+            headers=HEADERS,
+            timeout=15,
+            allow_redirects=False
+        )
+
+        print(f"[start-import] import status={resp.status_code}")
+        print(f"[start-import] final url={resp.url}")
+
+        print(f"[start-import] headers={dict(resp.headers)}")
+
+        print(f"[start-import] body preview=\n{resp.text[:1500]}")
+
+        # redirect langsung
         if resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("location", "")
-            if "/detail/watch/" in location:
-                return {"status": "success", "final_slug": extract_slug(location.split("?")[0])}
 
-        # Cari task_id
+            location = resp.headers.get("location", "")
+
+            print(f"[start-import] redirect location={location}")
+
+            if "/detail/watch/" in location:
+
+                final_slug = extract_slug(location.split("?")[0])
+
+                print(f"[start-import] SUCCESS redirect final_slug={final_slug}")
+
+                return {
+                    "status": "success",
+                    "final_slug": final_slug
+                }
+
         soup = BeautifulSoup(resp.text, "html.parser")
+
         task_id = None
 
-        for script in soup.find_all("script"):
+        # scan semua script
+        for idx, script in enumerate(soup.find_all("script")):
+
             text = script.get_text()
-            match = re.search(r'["\']([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})["\']', text)
+
+            print(f"\n[start-import] SCRIPT {idx}")
+            print(text[:1000])
+
+            match = re.search(
+                r'([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})',
+                text
+            )
+
             if match:
                 task_id = match.group(1)
+
+                print(f"[start-import] TASK FOUND={task_id}")
+
                 break
 
         if not task_id:
-            return {"status": "error", "message": "task_id tidak ditemukan"}
 
-        # Simpan cookies session untuk polling berikutnya
+            print("[start-import] task_id TIDAK ditemukan")
+
+            return {
+                "status": "error",
+                "message": "task_id tidak ditemukan"
+            }
+
         cookies = dict(session.cookies)
+
+        print(f"[start-import] cookies={cookies}")
+
         import_tasks[decoded_slug] = {
             "task_id": task_id,
             "cookies": cookies
         }
 
-        return {"status": "pending", "task_id": task_id}
+        print(f"[start-import] import_tasks keys={list(import_tasks.keys())}")
+
+        print("=============== END START IMPORT ===============\n")
+
+        return {
+            "status": "pending",
+            "task_id": task_id,
+            "cookies": cookies
+        }
 
     except Exception as e:
-        return {"status": "error", "message": str(e)}
 
+        print(f"[start-import] ERROR={e}")
 
-@app.get("/poll-import")
-async def poll_import(task_id: str):
-    """Cek status import sekali — frontend panggil berulang kali"""
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.post("/poll-import")
+async def poll_import(request: Request, task_id: str):
+
+    print("\n================ POLL IMPORT ================")
+
+    print(f"[poll-import] task_id={task_id}")
 
     try:
-        # 🔥 Cari cookies berdasarkan task_id
-        cookies = None
 
-        for data in import_tasks.values():
-            if data.get("task_id") == task_id:
-                cookies = data.get("cookies")
-                break
+        body = await request.json()
 
-        if not cookies:
-            return {
-                "status": "error",
-                "message": "session cookies tidak ditemukan"
-            }
+        print(f"[poll-import] body={body}")
+
+        cookies = body.get("cookies", {})
+
+        print(f"[poll-import] cookies={cookies}")
 
         status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
+
+        print(f"[poll-import] status_url={status_url}")
 
         session = requests.Session()
 
@@ -907,74 +986,82 @@ async def poll_import(task_id: str):
             timeout=15
         )
 
-        print(f"[poll-import] status={resp.status_code}")
-        print(f"[poll-import] body={resp.text[:500]}")
+        print(f"[poll-import] status_code={resp.status_code}")
+
+        print(f"[poll-import] response headers={dict(resp.headers)}")
+
+        print(f"[poll-import] raw body=\n{resp.text[:3000]}")
 
         if resp.status_code != 200:
+
+            print("[poll-import] HTTP ERROR")
+
             return {
                 "status": "error",
                 "message": f"HTTP {resp.status_code}"
             }
 
-        data = resp.json()
+        try:
+            data = resp.json()
+
+        except Exception as je:
+
+            print(f"[poll-import] JSON ERROR={je}")
+
+            return {
+                "status": "error",
+                "message": "response bukan JSON",
+                "raw": resp.text[:1000]
+            }
+
+        print(f"[poll-import] parsed json={json.dumps(data, indent=2)}")
 
         status = str(data.get("status", "")).lower()
 
-        # 🔥 Cari URL detail dari semua kemungkinan field
-        possible_fields = [
-            "redirect_url",
-            "url",
-            "watch_url",
-            "drama_url"
-        ]
+        print(f"[poll-import] parsed status={status}")
 
-        for field in possible_fields:
-            val = data.get(field)
+        # scan semua field
+        for key, val in data.items():
+
+            print(f"[poll-import] scan field {key}={val}")
 
             if isinstance(val, str) and "/detail/watch/" in val:
+
+                final_slug = extract_slug(val.split("?")[0])
+
+                print(f"[poll-import] SUCCESS final_slug={final_slug}")
+
                 return {
                     "status": "success",
-                    "final_slug": extract_slug(val.split("?")[0])
+                    "final_slug": final_slug
                 }
 
-        # 🔥 Cari slug langsung
         slug_val = (
             data.get("slug")
             or data.get("drama_slug")
         )
 
         if slug_val:
+
+            print(f"[poll-import] SUCCESS slug={slug_val}")
+
             return {
                 "status": "success",
                 "final_slug": slug_val
             }
 
-        # 🔥 Kalau status done tapi URL belum ada
-        if status in ("done", "complete", "success", "finished"):
+        print("[poll-import] STILL PROCESSING")
 
-            # scan semua value
-            for val in data.values():
-                if isinstance(val, str) and "/detail/watch/" in val:
-                    return {
-                        "status": "success",
-                        "final_slug": extract_slug(val.split("?")[0])
-                    }
+        print("================ END POLL IMPORT ================\n")
 
-            return {
-                "status": "success_unknown",
-                "raw": data
-            }
-
-        # 🔥 Masih processing
         return {
             "status": "processing",
-            "message": data.get("message", ""),
-            "progress": f"{data.get('progress_current', 0)}/{data.get('progress_total', 0)}",
             "raw": data
         }
 
     except Exception as e:
-        print(f"[poll-import] ERROR: {e}")
+
+        print(f"[poll-import] ERROR={e}")
 
         return {
             "status": "error",
