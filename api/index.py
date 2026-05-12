@@ -375,69 +375,7 @@ async def search_local(q: str, page: int = 1):
 # =========================
 # RESOLVE IMPORT — dengan retry lebih agresif
 # =========================
-async def resolve_import_internal(slug: str):
-    decoded_slug = unquote(slug)
-    if not decoded_slug.startswith("import?"):
-        return {"final_slug": decoded_slug}
 
-    query_part = decoded_slug[len("import?"):]
-    import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
-
-    for attempt in range(5):  # kurangi dari 10 → 5 agar tidak timeout
-        try:
-            resp = requests.get(import_url, headers=HEADERS, timeout=10, allow_redirects=True)
-            final_url = str(resp.url)
-            print(f"[resolve-import] Attempt {attempt+1}: {final_url}")
-
-            # 🔥 Berhasil redirect ke detail
-            if "/detail/watch/" in final_url:
-                return {"final_slug": extract_slug(final_url.split("?")[0])}
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-
-            # Cek meta refresh
-            meta_refresh = soup.find("meta", attrs={"http-equiv": "refresh"})
-            if meta_refresh:
-                content = meta_refresh.get("content", "")
-                url_match = re.search(r'url=(.+)', content, re.IGNORECASE)
-                if url_match:
-                    redirect_url = url_match.group(1).strip()
-                    if not redirect_url.startswith("http"):
-                        redirect_url = BASE_DOMAIN + redirect_url
-                    if "/detail/watch/" in redirect_url:
-                        return {"final_slug": extract_slug(redirect_url.split("?")[0])}
-
-            # Cek JS redirect
-            for script in soup.find_all("script"):
-                text = script.get_text()
-                match = re.search(r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']', text)
-                if match and "/detail/watch/" in match.group(1):
-                    return {"final_slug": extract_slug(match.group(1).split("?")[0])}
-
-            # Cek link langsung
-            detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
-            if detail_link:
-                return {"final_slug": extract_slug(detail_link["href"].split("?")[0])}
-
-            # 🔥 Cek apakah ada data drama di JSON dalam halaman
-            json_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?});', resp.text, re.DOTALL)
-            if json_match:
-                try:
-                    state = json.loads(json_match.group(1))
-                    slug_from_state = state.get("slug") or state.get("drama", {}).get("slug")
-                    if slug_from_state:
-                        return {"final_slug": slug_from_state}
-                except:
-                    pass
-
-            print(f"[resolve-import] Belum selesai, retry {attempt+1}/5...")
-            time.sleep(1.5)
-
-        except Exception as e:
-            print(f"[resolve-import] Error: {e}")
-            time.sleep(1.5)
-
-    return {"final_slug": None}
 
 # =========================
 # SCRAPE DETAIL
