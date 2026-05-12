@@ -1075,44 +1075,71 @@ async def poll_import(task_id: str):
             "message": str(e)
         }
 @app.get("/proxy-hls")
-def proxy_hls(url: str):
-
-    headers = {
-        "User-Agent": HEADERS["User-Agent"],
-        "Referer": "https://narto-drama.com/",
-        "Origin": "https://narto-drama.com"
-    }
-
-    r = requests.get(url, headers=headers, timeout=15)
-
-    content = r.text
-
-    base = url.rsplit("/", 1)[0]
-
-    lines = []
-
-    for line in content.splitlines():
-
-        if line.startswith("#") or not line.strip():
-            lines.append(line)
-            continue
-
-        if line.startswith("http"):
-            segment_url = line
-        else:
-            segment_url = f"{base}/{line}"
-
-        proxied = (
-            "https://drama-liart.vercel.app/proxy-segment?"
-            f"url={quote(segment_url, safe='')}"
+async def proxy_hls(url: str):
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": HEADERS["User-Agent"],
+                "Referer": BASE_DOMAIN,
+                "Origin": BASE_DOMAIN,
+            },
+            timeout=15
         )
 
-        lines.append(proxied)
+        content_type = resp.headers.get("content-type", "")
 
-    return Response(
-        "\n".join(lines),
-        media_type="application/vnd.apple.mpegurl"
-    )
+        # =========================
+        # HANDLE M3U8
+        # =========================
+        if ".m3u8" in url or "mpegurl" in content_type:
+            text = resp.text
+
+            base_url = url.rsplit("/", 1)[0] + "/"
+
+            new_lines = []
+
+            for line in text.splitlines():
+
+                # comment HLS
+                if line.startswith("#") or not line.strip():
+                    new_lines.append(line)
+                    continue
+
+                # absolute URL
+                if line.startswith("http"):
+                    absolute = line
+                else:
+                    absolute = urljoin(base_url, line)
+
+                # lewat proxy lagi
+                proxied = f"/proxy-hls?url={quote(absolute, safe='')}"
+
+                new_lines.append(proxied)
+
+            return Response(
+                "\n".join(new_lines),
+                media_type="application/vnd.apple.mpegurl",
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-cache",
+                }
+            )
+
+        # =========================
+        # HANDLE TS / AAC / MP4
+        # =========================
+        return Response(
+            resp.content,
+            media_type=content_type,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+            }
+        )
+
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/proxy-segment")
 def proxy_segment(url: str):
