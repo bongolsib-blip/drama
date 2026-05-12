@@ -115,7 +115,7 @@ def build_index(max_page=20, delay=0.5):
                 GENRE_INDEX[g].append(item)
         if not data.get("has_next"):
             break
-        await asyncio.sleep(delay)
+        time.sleep(delay)
     LAST_UPDATE = time.time()
 
 def ensure_cache():
@@ -139,7 +139,7 @@ def extract_slug(url: str) -> str:
 # =========================
 def scrape_list(url):
     try:
-        resp = await client.get(url, headers=HEADERS, timeout=10)
+        resp = requests.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         items = []
@@ -179,7 +179,7 @@ def scrape_list(url):
 async def scrape_local_search(q: str, page: int = 1):
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            html_resp = await client.get(
+            html_resp = requests.get(
                 f"{BASE_DOMAIN}/search",
                 params={'q': q, 'lang': 'id-ID', 'page': page},
                 headers={
@@ -237,7 +237,7 @@ async def scrape_local_search(q: str, page: int = 1):
 async def fetch_one_provider(q: str, provider: str):
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.get(
+            resp = requests.get(
                 f"{BASE_DOMAIN}/search/providers/retry",
                 params={
                     'q': q,
@@ -317,7 +317,7 @@ async def scrape_full_search(q: str, page: int = 1):
         async def fetch_with_sem(provider):
             async with semaphore:
                 result = await fetch_one_provider(q, provider)
-                await asyncio.sleep(0.2)
+                time.sleep(0.2)
                 return result
 
         tasks = [fetch_with_sem(p) for p in PROVIDERS]
@@ -385,7 +385,7 @@ async def resolve_import_internal(slug: str):
 
     for attempt in range(5):  # kurangi dari 10 → 5 agar tidak timeout
         try:
-            resp = await client.get(import_url, headers=HEADERS, timeout=10, allow_redirects=True)
+            resp = requests.get(import_url, headers=HEADERS, timeout=10, allow_redirects=True)
             final_url = str(resp.url)
             print(f"[resolve-import] Attempt {attempt+1}: {final_url}")
 
@@ -431,11 +431,11 @@ async def resolve_import_internal(slug: str):
                     pass
 
             print(f"[resolve-import] Belum selesai, retry {attempt+1}/5...")
-            await asyncio.sleep(1.5)
+            time.sleep(1.5)
 
         except Exception as e:
             print(f"[resolve-import] Error: {e}")
-            await asyncio.sleep(1.5)
+            time.sleep(1.5)
 
     return {"final_slug": None}
 
@@ -445,7 +445,7 @@ async def resolve_import_internal(slug: str):
 def scrape_detail(slug: str):
     try:
         url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
-        resp = await client.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+        resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
         resp.raise_for_status()
         final_url = str(resp.url)
         final_slug = extract_slug(final_url.split("?")[0])
@@ -487,7 +487,7 @@ def get_video_src(slug: str, ep: int):
     refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source?lang=id-ID&force=1"
     for _ in range(5):
         try:
-            resp = await client.get(refresh_url, headers=HEADERS, timeout=10)
+            resp = requests.get(refresh_url, headers=HEADERS, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 url = data.get("play_url")
@@ -498,19 +498,19 @@ def get_video_src(slug: str, ep: int):
                     return url
         except Exception:
             pass
-        await asyncio.sleep(1.5)
+        time.sleep(1.5)
     return None
 
 def get_total_episodes(slug: str):
     url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID"
-    resp = await client.get(url, headers=HEADERS, timeout=10)
+    resp = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
     episodes = soup.find_all("a", class_="episode-item")
     return len(episodes)
 
 def get_all_video_links(slug: str):
     url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?lang=id-ID"
-    resp = await client.get(url, headers=HEADERS, timeout=10)
+    resp = requests.get(url, headers=HEADERS, timeout=10)
     if resp.status_code != 200:
         return []
     match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', resp.text)
@@ -546,7 +546,7 @@ def list_all(max_page: int = 5, delay: float = 1):
             all_items.extend(data["items"])
         if not data.get("has_next"):
             break
-        await asyncio.sleep(delay)
+        time.sleep(delay)
     return {"total": len(all_items), "data": all_items}
 
 @app.get("/search")
@@ -630,7 +630,7 @@ async def check_import(request: Request):
         status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
         
         for attempt in range(5):
-            await asyncio.sleep(1.5)
+            time.sleep(1.5)
             
             try:
                 status_resp = session.get(status_url, headers=HEADERS, timeout=8)
@@ -799,7 +799,7 @@ async def stream(request: Request, url: str):
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
         if ".m3u8" in decoded_url:
-            resp = await client.get(decoded_url, headers=fetch_headers)
+            resp = requests.get(decoded_url, headers=fetch_headers)
             text = resp.text
             base_url = decoded_url.rsplit("/", 1)[0] + "/"
             rewritten_lines = []
@@ -871,7 +871,7 @@ async def debug_search(q: str, page: int = 1):
     }
     async with httpx.AsyncClient(headers=headers, timeout=15.0, follow_redirects=True) as client:
         try:
-            resp = await client.get(url, params=params)
+            resp = requests.get(url, params=params)
             soup = BeautifulSoup(resp.text, "html.parser")
             all_cards = soup.find_all("article", class_="card")
             raw_hrefs = []
@@ -955,7 +955,7 @@ async def poll_import(task_id: str):
     """Cek status import sekali — frontend panggil berulang kali"""
     try:
         status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
-        resp = await client.get(status_url, headers=HEADERS, timeout=8)
+        resp = requests.get(status_url, headers=HEADERS, timeout=8)
 
         if resp.status_code != 200:
             return {"status": "error", "message": f"HTTP {resp.status_code}"}
