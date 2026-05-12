@@ -632,24 +632,7 @@ async def check_import(request: Request):
         return {"status": "error", "message": str(e), "final_slug": None}
 
 
-# Fix /resolve-import juga
-@app.get("/resolve-import")
-async def resolve_import_endpoint(request: Request):
-    # 🔥 Sama — baca raw query
-    raw_query = str(request.url.query)
-    
-    if raw_query.startswith("slug="):
-        decoded_slug = unquote(raw_query[len("slug="):])
-    else:
-        decoded_slug = unquote(request.query_params.get("slug", ""))
 
-    if not decoded_slug.startswith("import?"):
-        return {"error": "Bukan import slug", "final_slug": decoded_slug}
-
-    result = await resolve_import_internal(decoded_slug)
-    if not result.get("final_slug"):
-        return {"status": "failed", "message": "Import tidak selesai", "final_slug": None}
-    return {"status": "success", "final_slug": result["final_slug"]}
 
 @app.get("/detail")
 async def detail(request: Request):
@@ -659,8 +642,11 @@ async def detail(request: Request):
     else:
         full_slug = request.query_params.get("slug", "")
 
-    if full_slug.startswith("import?") or full_slug == "import":
-        resolve_result = await resolve_import_internal(full_slug)
+    if full_slug.startswith("import?"):
+        return {
+            "error": "Import belum selesai",
+            "final_slug": None
+        }
         if not resolve_result.get("final_slug"):
             return {
                 "slug": full_slug,
@@ -696,8 +682,11 @@ async def episodes(request: Request):
         if param.startswith("slug="):
             slug_part = unquote(param[len("slug="):])
             break
-    if slug_part.startswith("import?") or slug_part == "import":
-        resolve = await resolve_import_internal(slug_part)
+    if slug_part.startswith("import?"):
+        return {
+            "error": "Gunakan final slug",
+            "video_url": None
+        }
         if not resolve.get("final_slug"):
             return {"error": "Gagal resolve import slug", "total_episode": 0}
         slug_part = resolve["final_slug"]
