@@ -572,75 +572,121 @@ async def check_import(request: Request):
 
     query_part = decoded_slug[len("import?"):]
     import_url = f"{BASE_DOMAIN}/search/import?{query_part}"
-    
-    print(f"[check-import] Fetching: {import_url}")
 
     try:
-        # 🔥 Pakai session agar cookie terbawa
         session = requests.Session()
-        
-        # Visit halaman utama dulu untuk dapat cookie
         session.get(BASE_DOMAIN, headers=HEADERS, timeout=8)
-        
-        # Baru akses import URL
-        resp = session.get(
-            import_url,
-            headers=HEADERS,
-            timeout=8,
-            allow_redirects=True
-        )
-        
-        final_url = str(resp.url)
-        print(f"[check-import] Final URL: {final_url}")
-        print(f"[check-import] Status: {resp.status_code}")
 
-        if "/detail/watch/" in final_url:
-            return {
-                "status": "success",
-                "final_slug": extract_slug(final_url.split("?")[0])
-            }
+        # STEP 1: Hit import URL → dapat task_id dari response atau redirect
+        resp = session.get(import_url, headers=HEADERS, timeout=8, allow_redirects=False)
+        
+        print(f"[check-import] status={resp.status_code}")
+        print(f"[check-import] headers={dict(resp.headers)}")
+        print(f"[check-import] body preview={resp.text[:1000]}")
 
+        # Cek redirect langsung
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("location", "")
+            if "/detail/watch/" in location:
+                return {"status": "success", "final_slug": extract_slug(location.split("?")[0])}
+
+        # STEP 2: Cari task_id dari HTML
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Cek meta refresh
-        meta_refresh = soup.find("meta", attrs={"http-equiv": "refresh"})
-        if meta_refresh:
-            content = meta_refresh.get("content", "")
-            url_match = re.search(r'url=(.+)', content, re.IGNORECASE)
-            if url_match:
-                redirect_url = url_match.group(1).strip()
-                if not redirect_url.startswith("http"):
-                    redirect_url = BASE_DOMAIN + redirect_url
-                if "/detail/watch/" in redirect_url:
-                    return {
-                        "status": "success",
-                        "final_slug": extract_slug(redirect_url.split("?")[0])
-                    }
-
-        # Cek JS redirect
+        
+        task_id = None
+        
+        # Cari di script tag
         for script in soup.find_all("script"):
             text = script.get_text()
-            match = re.search(
-                r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']',
-                text
-            )
-            if match and "/detail/watch/" in match.group(1):
-                return {
-                    "status": "success",
-                    "final_slug": extract_slug(match.group(1).split("?")[0])
-                }
+            # Cari pola task UUID
+            match = re.search(r'task["\']?\s*[:=]\s*["\']([a-f0-9\-]{36})["\']', text)
+            if match:
+                task_id = match.group(1)
+                break
+            # Cari pola lain
+            match2 = re.search(r'["\']([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})["\']', text)
+            if match2:
+                task_id = match2.group(1)
+                break
 
-        # Cek link langsung
-        detail_link = soup.find("a", href=re.compile(r"/detail/watch/"))
-        if detail_link:
-            return {
-                "status": "success",
-                "final_slug": extract_slug(detail_link["href"].split("?")[0])
-            }
+        # Cari di data attribute
+        if not task_id:
+            el = soup.find(attrs={"data-task": True})
+            if el:
+                task_id = el["data-task"]
 
-        # 🔥 Debug: lihat HTML yang didapat
-        print(f"[check-import] HTML preview: {resp.text[:500]}")
+        # Cari di meta tag
+        if not task_id:
+            meta = soup.find("meta", attrs={"name": "task-id"})
+            if meta:
+                task_id = meta.get("content")
+
+        print(f"[check-import] task_id={task_id}")
+
+        if not task_id:
+            return {"status": "pending", "final_slug": None, "debug": "no task_id found"}
+
+        # STEP 3: Poll status endpoint
+        status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
         
+        for attempt in range(5):
+            time.sleep(1.5)
+            
+            try:
+                status_resp = session.get(status_url, headers=HEADERS, timeout=8)
+                print(f"[import-status] attempt={attempt+1} status={status_resp.status_code} body={status_resp.text[:300]}")
+                
+                if status_resp.status_code == 200:
+                    try:
+                        status_data = status_resp.json()
+                        
+                        # Cek berbagai kemungkinan field response
+                        # Kemungkinan 1: ada field "url" atau "redirect"
+                        redirect_url = (
+                            status_data.get("url") or
+                            status_data.get("redirect") or
+                            status_data.get("redirect_url") or
+                            status_data.get("drama_url") or
+                            status_data.get("watch_url")
+                        )
+                        if redirect_url and "/detail/watch/" in redirect_url:
+                            return {
+                                "status": "success",
+                                "final_slug": extract_slug(redirect_url.split("?")[0])
+                            }
+
+                        # Kemungkinan 2: ada field "slug"
+                        slug_val = status_data.get("slug") or status_data.get("drama_slug")
+                        if slug_val:
+                            return {"status": "success", "final_slug": slug_val}
+
+                        # Kemungkinan 3: status "done"/"complete" dengan data lain
+                        st = status_data.get("status", "").lower()
+                        if st in ("done", "complete", "success", "finished"):
+                            # Cari slug di semua field
+                            for val in status_data.values():
+                                if isinstance(val, str) and "/detail/watch/" in val:
+                                    return {
+                                        "status": "success",
+                                        "final_slug": extract_slug(val.split("?")[0])
+                                    }
+                            # Kembalikan raw data untuk debug
+                            return {
+                                "status": "success_raw",
+                                "final_slug": None,
+                                "raw": status_data
+                            }
+
+                        # Masih pending
+                        if st in ("pending", "processing", "queued", "running"):
+                            continue
+                            
+                    except Exception as je:
+                        print(f"[import-status] JSON parse error: {je}, raw={status_resp.text[:200]}")
+                        
+            except Exception as e:
+                print(f"[import-status] Error: {e}")
+
         return {"status": "pending", "final_slug": None}
 
     except Exception as e:
