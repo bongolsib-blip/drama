@@ -957,111 +957,116 @@ async def start_import(request: Request):
         }
 
 @app.get("/poll-import")
-async def poll_import(request: Request, task_id: str):
-
-    print("\n================ POLL IMPORT ================")
-
-    print(f"[poll-import] task_id={task_id}")
+async def poll_import(task_id: str):
 
     try:
-
-        body = await request.json()
-
-        print(f"[poll-import] body={body}")
-
-        cookies = body.get("cookies", {})
-
-        print(f"[poll-import] cookies={cookies}")
-
-        status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
-
-        print(f"[poll-import] status_url={status_url}")
-
-        session = requests.Session()
-
-        resp = session.get(
-            status_url,
-            headers=HEADERS,
-            cookies=cookies,
-            timeout=15
+        status_url = (
+            f"{BASE_DOMAIN}/search/import/status"
+            f"?task={task_id}&lang=id-ID"
         )
 
-        print(f"[poll-import] status_code={resp.status_code}")
+        print(f"[poll-import] TASK: {task_id}")
+        print(f"[poll-import] URL: {status_url}")
 
-        print(f"[poll-import] response headers={dict(resp.headers)}")
+        resp = requests.get(
+            status_url,
+            headers=HEADERS,
+            timeout=8,
+            allow_redirects=True
+        )
 
-        print(f"[poll-import] raw body=\n{resp.text[:3000]}")
+        print(f"[poll-import] STATUS CODE: {resp.status_code}")
+        print(f"[poll-import] CONTENT TYPE: {resp.headers.get('content-type')}")
 
-        if resp.status_code != 200:
+        raw_text = resp.text[:1000]
 
-            print("[poll-import] HTTP ERROR")
+        print(f"[poll-import] RAW RESPONSE:")
+        print(raw_text)
 
-            return {
-                "status": "error",
-                "message": f"HTTP {resp.status_code}"
-            }
-
+        # =========================
+        # CEK APAKAH JSON
+        # =========================
         try:
             data = resp.json()
 
-        except Exception as je:
+        except Exception as json_error:
 
-            print(f"[poll-import] JSON ERROR={je}")
+            print(f"[poll-import] JSON ERROR: {json_error}")
 
             return {
-                "status": "error",
-                "message": "response bukan JSON",
-                "raw": resp.text[:1000]
+                "status": "processing",
+                "message": "response belum json",
+                "raw_preview": raw_text[:200]
             }
 
-        print(f"[poll-import] parsed json={json.dumps(data, indent=2)}")
+        print(f"[poll-import] JSON DATA: {data}")
 
         status = str(data.get("status", "")).lower()
 
-        print(f"[poll-import] parsed status={status}")
-
-        # scan semua field
-        for key, val in data.items():
-
-            print(f"[poll-import] scan field {key}={val}")
-
-            if isinstance(val, str) and "/detail/watch/" in val:
-
-                final_slug = extract_slug(val.split("?")[0])
-
-                print(f"[poll-import] SUCCESS final_slug={final_slug}")
-
-                return {
-                    "status": "success",
-                    "final_slug": final_slug
-                }
-
-        slug_val = (
-            data.get("slug")
-            or data.get("drama_slug")
+        redirect_url = (
+            data.get("redirect_url")
+            or data.get("url")
+            or data.get("redirect")
+            or ""
         )
 
-        if slug_val:
-
-            print(f"[poll-import] SUCCESS slug={slug_val}")
+        # =========================
+        # SUCCESS
+        # =========================
+        if "/detail/watch/" in redirect_url:
 
             return {
                 "status": "success",
-                "final_slug": slug_val
+                "final_slug": extract_slug(
+                    redirect_url.split("?")[0]
+                )
             }
 
-        print("[poll-import] STILL PROCESSING")
+        # =========================
+        # STATUS SUCCESS
+        # =========================
+        if status in (
+            "done",
+            "success",
+            "finished",
+            "complete"
+        ):
 
-        print("================ END POLL IMPORT ================\n")
+            # scan semua field
+            for val in data.values():
 
+                if (
+                    isinstance(val, str)
+                    and "/detail/watch/" in val
+                ):
+
+                    return {
+                        "status": "success",
+                        "final_slug": extract_slug(
+                            val.split("?")[0]
+                        )
+                    }
+
+            return {
+                "status": "success_unknown",
+                "raw": data
+            }
+
+        # =========================
+        # MASIH PROCESSING
+        # =========================
         return {
             "status": "processing",
-            "raw": data
+            "message": data.get("message", ""),
+            "progress": (
+                f"{data.get('progress_current', 0)}"
+                f"/{data.get('progress_total', 0)}"
+            )
         }
 
     except Exception as e:
 
-        print(f"[poll-import] ERROR={e}")
+        print(f"[poll-import] ERROR: {e}")
 
         return {
             "status": "error",
