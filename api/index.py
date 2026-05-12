@@ -44,7 +44,7 @@ PROVIDERS = [
 ]
 
 video_cache = {}
-VIDEO_CACHE_TTL = 0
+VIDEO_CACHE_TTL = 600
 
 # =========================
 # GENRE
@@ -115,7 +115,7 @@ def build_index(max_page=20, delay=0.5):
                 GENRE_INDEX[g].append(item)
         if not data.get("has_next"):
             break
-        time.sleep(delay)
+        await asyncio.sleep(delay)
     LAST_UPDATE = time.time()
 
 def ensure_cache():
@@ -139,7 +139,7 @@ def extract_slug(url: str) -> str:
 # =========================
 def scrape_list(url):
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp = await client.get(url, headers=HEADERS, timeout=10)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         items = []
@@ -385,7 +385,7 @@ async def resolve_import_internal(slug: str):
 
     for attempt in range(5):  # kurangi dari 10 → 5 agar tidak timeout
         try:
-            resp = requests.get(import_url, headers=HEADERS, timeout=10, allow_redirects=True)
+            resp = await client.get(import_url, headers=HEADERS, timeout=10, allow_redirects=True)
             final_url = str(resp.url)
             print(f"[resolve-import] Attempt {attempt+1}: {final_url}")
 
@@ -431,11 +431,11 @@ async def resolve_import_internal(slug: str):
                     pass
 
             print(f"[resolve-import] Belum selesai, retry {attempt+1}/5...")
-            time.sleep(1.5)
+            await asyncio.sleep(1.5)
 
         except Exception as e:
             print(f"[resolve-import] Error: {e}")
-            time.sleep(1.5)
+            await asyncio.sleep(1.5)
 
     return {"final_slug": None}
 
@@ -445,7 +445,7 @@ async def resolve_import_internal(slug: str):
 def scrape_detail(slug: str):
     try:
         url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID&from=home"
-        resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
+        resp = await client.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
         resp.raise_for_status()
         final_url = str(resp.url)
         final_slug = extract_slug(final_url.split("?")[0])
@@ -487,7 +487,7 @@ def get_video_src(slug: str, ep: int):
     refresh_url = f"{BASE_DOMAIN}/detail/watch/{slug}/{ep}/refresh-source?lang=id-ID&force=1"
     for _ in range(5):
         try:
-            resp = requests.get(refresh_url, headers=HEADERS, timeout=10)
+            resp = await client.get(refresh_url, headers=HEADERS, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 url = data.get("play_url")
@@ -498,19 +498,19 @@ def get_video_src(slug: str, ep: int):
                     return url
         except Exception:
             pass
-        time.sleep(1.5)
+        await asyncio.sleep(1.5)
     return None
 
 def get_total_episodes(slug: str):
     url = f"{BASE_DOMAIN}/detail/watch/{slug}?lang=id-ID"
-    resp = requests.get(url, headers=HEADERS, timeout=10)
+    resp = await client.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
     episodes = soup.find_all("a", class_="episode-item")
     return len(episodes)
 
 def get_all_video_links(slug: str):
     url = f"{BASE_DOMAIN}/detail/watch/{slug}/1?lang=id-ID"
-    resp = requests.get(url, headers=HEADERS, timeout=10)
+    resp = await client.get(url, headers=HEADERS, timeout=10)
     if resp.status_code != 200:
         return []
     match = re.search(r'episodeItemsRaw\s*=\s*(\[[\s\S]*?\])', resp.text)
@@ -546,7 +546,7 @@ def list_all(max_page: int = 5, delay: float = 1):
             all_items.extend(data["items"])
         if not data.get("has_next"):
             break
-        time.sleep(delay)
+        await asyncio.sleep(delay)
     return {"total": len(all_items), "data": all_items}
 
 @app.get("/search")
@@ -630,7 +630,7 @@ async def check_import(request: Request):
         status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
         
         for attempt in range(5):
-            time.sleep(1.5)
+            await asyncio.sleep(1.5)
             
             try:
                 status_resp = session.get(status_url, headers=HEADERS, timeout=8)
@@ -895,6 +895,7 @@ async def debug_search(q: str, page: int = 1):
 
 # Simpan task_id sementara di memory
 import_tasks = {}  # {slug_key: task_id}
+resolved_cache = {}
 
 @app.get("/start-import")
 async def start_import(request: Request):
@@ -954,7 +955,7 @@ async def poll_import(task_id: str):
     """Cek status import sekali — frontend panggil berulang kali"""
     try:
         status_url = f"{BASE_DOMAIN}/search/import/status?task={task_id}&lang=id-ID"
-        resp = requests.get(status_url, headers=HEADERS, timeout=8)
+        resp = await client.get(status_url, headers=HEADERS, timeout=8)
 
         if resp.status_code != 200:
             return {"status": "error", "message": f"HTTP {resp.status_code}"}
