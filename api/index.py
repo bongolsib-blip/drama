@@ -450,7 +450,42 @@ def get_video_src(slug: str, ep: int):
                 # ✅ PRIORITAS:
                 # pakai play_url dulu karena biasanya ada subtitle
                 if play_url:
-                    final_url = play_url
+
+                    # 🔥 kalau stream/proxy
+                    if "/stream/proxy" in play_url:
+                
+                        try:
+                            proxy_url = (
+                                "https://narto-drama.com" + play_url
+                            )
+                
+                            r = requests.get(
+                                proxy_url,
+                                headers={
+                                    **HEADERS,
+                                    "Referer": "https://narto-drama.com/",
+                                    "Origin": "https://narto-drama.com",
+                                },
+                                allow_redirects=True,
+                                timeout=15,
+                                stream=True,
+                            )
+                
+                            # 🔥 ambil URL final hasil redirect
+                            final_real_url = r.url
+                
+                            # kalau berhasil redirect ke mp4/m3u8
+                            if final_real_url and final_real_url != proxy_url:
+                                final_url = final_real_url
+                            else:
+                                final_url = direct_url or play_url
+                
+                        except Exception as e:
+                            print("proxy resolve error:", e)
+                            final_url = direct_url or play_url
+                
+                    else:
+                        final_url = play_url
 
                 # 🔥 fallback kalau tidak ada
                 elif direct_url:
